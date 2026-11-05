@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root {
+    --bg: #0a0c0f; --panel: #101318; --raise: #161b22; --line: #212831;
+    --fg: #dfe5ec; --muted: #8793a0; --faint: #5b6672; --accent: #7fb8ff; --on: #1b2735;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding: 10px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  .mark { font-weight: 650; letter-spacing: .14em; font-size: 12px; }
+  .subject { font-family: var(--mono); color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .readout { margin-left: auto; font-family: var(--mono); color: var(--muted); font-size: 12px; white-space: pre; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 0; }
+  .stage { position: relative; min-width: 0; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
+  [hidden] { display: none !important; }
+  #status { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); padding: 24px; text-align: center; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 14px 16px 20px;
+          display: flex; flex-direction: column; gap: 18px; }
+  section { display: flex; flex-direction: column; gap: 8px; }
+  h2 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  .seg { display: flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { flex: 1 1 auto; background: transparent; color: var(--muted); border: 0; border-right: 1px solid var(--line);
+                padding: 6px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+  .seg button:last-child { border-right: 0; }
+  .seg button[aria-pressed="true"] { background: var(--on); color: var(--fg); }
+  .bundle { display: flex; flex-direction: column; gap: 7px; padding: 10px; border: 1px solid var(--line);
+            border-radius: 8px; background: var(--raise); }
+  .bundle .top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .bundle .name { font-weight: 560; overflow-wrap: anywhere; }
+  .bundle .stat { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer;
+          border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px 3px 8px; user-select: none; }
+  .chip input { accent-color: var(--accent); margin: 0; }
+  .chip:has(input:checked) { color: var(--fg); background: var(--on); }
+  label.slider { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 12px; color: var(--muted); }
+  label.slider input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+  label.slider output { font-family: var(--mono); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button.act { background: var(--raise); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+               padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  button.act:hover, .seg button:hover { color: var(--fg); }
+  .note { color: var(--muted); font-size: 12px; margin: 0; }
+  .note b { color: var(--fg); font-weight: 560; }
+  .dir { display: inline-flex; align-items: center; gap: 5px; margin-right: 10px; white-space: nowrap; }
+  .dir i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  kbd { font-family: var(--mono); font-size: 11px; color: var(--fg); }
+  @media (max-width: 860px) {
+    body { height: auto; display: block; }
+    main { display: block; }
+    .stage { height: 64vh; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+    .readout { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="mark">MAT</span>
+  <span class="subject" id="subject"></span>
+  <span class="readout" id="readout"></span>
+</header>
+<main>
+  <div class="stage"><canvas id="gl"></canvas><div id="status">Loading…</div></div>
+  <aside>
+    <section>
+      <h2>Layout</h2>
+      <div class="seg" id="layout">
+        <button data-t="3" aria-pressed="true">Multiplanar</button><button data-t="4">3-D</button>
+        <button data-t="0">Axial</button><button data-t="1">Coronal</button><button data-t="2">Sagittal</button>
+      </div>
+    </section>
+    <section>
+      <h2>Bundles</h2>
+      <div id="bundles" style="display:flex;flex-direction:column;gap:8px"></div>
+    </section>
+    <section id="glyph-sec" hidden>
+      <h2>Glyphs</h2>
+      <p class="note">Colour: <b>visitation ODF</b>, the directions the bundle's streamlines take in each voxel. Drawn on the three slices through the crosshair: click or scroll to move them.</p>
+      <p class="note" id="dir-legend" hidden><span class="dir"><i style="background:#ff4d4d"></i>left–right</span><span class="dir"><i style="background:#4dff6a"></i>front–back</span><span class="dir"><i style="background:#4d8bff"></i>up–down</span></p>
+      <label class="chip" id="fodf-chip" hidden><input type="checkbox" id="fodf" checked>fODF in grey: every fibre population</label>
+      <div class="row"><button class="act" id="go">Back to the core's midpoint</button></div>
+    </section>
+    <section>
+      <h2>Layers</h2>
+      <label class="slider" id="dens-row">Density opacity <output id="dens-out"></output><input type="range" id="dens" min="0" max="1" step="0.05"></label>
+      <label class="slider" id="back-row">Background opacity <output id="back-out">1.00</output><input type="range" id="back" min="0" max="1" step="0.05" value="1"></label>
+    </section>
+    <section>
+      <h2>Mouse</h2>
+      <div class="seg" id="wheel"><button data-m="1" aria-pressed="true">Scroll moves slices</button><button data-m="3">Scroll zooms</button></div>
+      <p class="note"><kbd>Click</kbd> moves the slices · <kbd>Drag</kbd> in 3-D rotates · when scroll zooms, <kbd>right-drag</kbd> pans</p>
+      <div class="row"><button class="act" id="reset">Reset zoom</button></div>
+    </section>
+  </aside>
+</main>
+__NIIVUE__
+<script type="application/json" id="mat-data">__DATA__</script>
+<script>
+(async () => {
+  const D = JSON.parse(document.getElementById("mat-data").textContent);
+  const $ = (id) => document.getElementById(id);
+  const status = $("status");
+  $("subject").textContent = D.subject;
+  if (!window.niivue) {
+    status.textContent = "NiiVue did not load (offline?). Save the page with mat.viewer.save_html(..., niivue_js=...) to embed it.";
+    return;
+  }
+  const { Niivue, NVImage, NVMesh, SLICE_TYPE, SHOW_RENDER } = window.niivue;
+  try {
+    const nv = new Niivue({
+      backColor: [0.039, 0.047, 0.059, 1], multiplanarShowRender: SHOW_RENDER.ALWAYS,
+      heroImageFraction: 0.6, heroSliceType: SLICE_TYPE.RENDER, meshXRay: 0.5,
+      meshThicknessOn2D: D.slab || 4, isColorbar: false, dragMode: 1, crosshairWidth: 1,
+      crosshairColor: [1, 0.3, 0.3, 1],
+    });
+    await nv.attachTo("gl");
+    const bytes = (b64) => { const s = atob(b64), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u.buffer; };
+    for (const v of D.volumes) {
+      const o = { base64: v.data, name: v.name, colormap: v.colormap, opacity: v.opacity };
+      if (v.cal_min !== null) { o.cal_min = v.cal_min; o.cal_max = v.cal_max; }
+      nv.addVolume(await NVImage.loadFromBase64(o));
+    }
+    for (const m of D.meshes)
+      nv.addMesh(await NVMesh.readMesh(bytes(m.data), m.name, nv.gl, m.opacity, new Uint8Array(m.rgba255), true));
+    nv.setSliceType(SLICE_TYPE.MULTIPLANAR);
+
+    // ---- glyphs on the three slices through the crosshair, rebuilt as it moves
+    const glyphVisible = {}, glyphMesh = {};
+    let shown = null, pending = null;
+    if (D.glyphs.length) {
+      const sp = D.sphere, G = sp.n, W = new Float32Array(bytes(sp.w)), F = new Uint32Array(bytes(sp.faces));
+      const basis = {}; for (const k in sp.basis) basis[k] = new Float32Array(bytes(sp.basis[k]));
+      const dirRGB = new Uint8Array(G * 3);
+      for (let v = 0; v < G; v++) {
+        const a = [Math.abs(W[3 * v]), Math.abs(W[3 * v + 1]), Math.abs(W[3 * v + 2])], m = Math.max(...a);
+        for (let k = 0; k < 3; k++) dirRGB[3 * v + k] = Math.round(255 * a[k] / m);
+      }
+      const A = D.affine, Ai = sp.inv_affine;
+      for (const g of D.glyphs) { g.ijk = new Int32Array(bytes(g.ijk)); g.coef = new Float32Array(bytes(g.coef)); glyphVisible[g.name] = true; }
+      const build = (g, c) => {
+        const K = g.K, B = basis[K], n = g.ijk.length / 3, sel = [];
+        for (let i = 0; i < n; i++) if (g.ijk[3 * i] === c[0] || g.ijk[3 * i + 1] === c[1] || g.ijk[3 * i + 2] === c[2]) sel.push(i);
+        if (!sel.length) return null;
+        const pts = new Float32Array(sel.length * G * 3), rgba = new Uint8Array(sel.length * G * 4), tris = [], r = new Float32Array(G);
+        let nv_ = 0;
+        for (const i of sel) {
+          let m = 0;
+          for (let v = 0; v < G; v++) { let s = 0; for (let k = 0; k < K; k++) s += g.coef[i * K + k] * B[k * G + v]; r[v] = s > 0 ? s : 0; if (r[v] > m) m = r[v]; }
+          if (m <= 0) continue;
+          const den = g.norm ? m : g.vmax, x = g.ijk[3 * i], y = g.ijk[3 * i + 1], z = g.ijk[3 * i + 2];
+          const cx = A[0][0] * x + A[0][1] * y + A[0][2] * z + A[0][3], cy = A[1][0] * x + A[1][1] * y + A[1][2] * z + A[1][3],
+                cz = A[2][0] * x + A[2][1] * y + A[2][2] * z + A[2][3];
+          const o = nv_;
+          for (let v = 0; v < G; v++) {
+            r[v] /= den;
+            const rr = r[v] * sp.radius, q = 3 * (o + v), p4 = 4 * (o + v);
+            pts[q] = cx + rr * W[3 * v]; pts[q + 1] = cy + rr * W[3 * v + 1]; pts[q + 2] = cz + rr * W[3 * v + 2];
+            if (g.rgb) { rgba[p4] = g.rgb[0]; rgba[p4 + 1] = g.rgb[1]; rgba[p4 + 2] = g.rgb[2]; }
+            else { rgba[p4] = dirRGB[3 * v]; rgba[p4 + 1] = dirRGB[3 * v + 1]; rgba[p4 + 2] = dirRGB[3 * v + 2]; }
+            rgba[p4 + 3] = 255;
+          }
+          for (let f = 0; f < F.length; f += 3)   // skip triangles collapsed at the centre
+            if (Math.max(r[F[f]], r[F[f + 1]], r[F[f + 2]]) > 0.02) tris.push(o + F[f], o + F[f + 1], o + F[f + 2]);
+          nv_ += G;
+        }
+        if (!tris.length) return null;
+        return new NVMesh(pts.subarray(0, 3 * nv_), Uint32Array.from(tris), g.name, rgba.subarray(0, 4 * nv_),
+                          g.opacity, glyphVisible[g.name], nv.gl);
+      };
+      const follow = (mm) => {
+        const c = [0, 1, 2].map((k) => Math.min(D.shape[k] - 1, Math.max(0,
+          Math.round(Ai[k][0] * mm[0] + Ai[k][1] * mm[1] + Ai[k][2] * mm[2] + Ai[k][3]))));
+        if (shown && c.every((x, k) => x === shown[k])) return;
+        shown = c;
+        for (const g of D.glyphs) {
+          if (glyphMesh[g.name]) nv.removeMesh(glyphMesh[g.name]);
+          glyphMesh[g.name] = build(g, c);
+          if (glyphMesh[g.name]) nv.addMesh(glyphMesh[g.name]);
+        }
+      };
+      let timer = null;   // debounced: while scrolling, only the slice you stop on is meshed
+      window.followGlyphs = (mm) => { pending = mm; clearTimeout(timer); timer = setTimeout(() => { if (pending) { follow(pending); pending = null; } }, 150); };
+      follow(D.focus);
+    }
+    const setGlyphs = (name, on) => {
+      glyphVisible[name] = on;
+      if (glyphMesh[name]) nv.setMeshProperty(glyphMesh[name].id, "visible", on);
+      const i = D.meshes.findIndex((m) => m.name === name);     // glyph_planes="all": fixed meshes
+      if (i >= 0) nv.setMeshProperty(nv.meshes[i].id, "visible", on);
+    };
+    const hasGlyphs = (role, b) => D.glyphs.some((g) => g.role === role && (b === undefined || g.bundle === b))
+      || D.meshes.some((m) => m.role === role && (b === undefined || m.bundle === b));
+    const goFocus = () => { if (D.focus_frac) { nv.scene.crosshairPos = [...D.focus_frac]; nv.drawScene(); if (window.followGlyphs) window.followGlyphs(D.focus); } };
+    goFocus();
+    status.hidden = true;
+
+    // ---- controls
+    const vIdx = (role, b) => D.volumes.findIndex((v) => v.role === role && (b === undefined || v.bundle === b));
+    const mIdx = (role, b) => D.meshes.findIndex((m) => m.role === role && (b === undefined || m.bundle === b));
+    const showMesh = (i, on) => { if (i >= 0) nv.setMeshProperty(nv.meshes[i].id, "visible", on); };
+    const dens = $("dens"), back = $("back");
+    const densOn = {};
+    const firstDensity = D.volumes.find((v) => v.role === "density");
+    dens.value = firstDensity ? firstDensity.opacity : 0.55;
+    $("dens-out").textContent = Number(dens.value).toFixed(2);
+    const applyDensity = () => {
+      for (const b of D.bundles) { const i = vIdx("density", b.name); if (i >= 0) nv.setOpacity(i, densOn[b.name] ? Number(dens.value) : 0); }
+      $("dens-out").textContent = Number(dens.value).toFixed(2);
+    };
+    dens.addEventListener("input", applyDensity);
+    if (!firstDensity) $("dens-row").hidden = true;
+    const bi = vIdx("background");
+    if (bi < 0) $("back-row").hidden = true;
+    back.addEventListener("input", () => { nv.setOpacity(bi, Number(back.value)); $("back-out").textContent = Number(back.value).toFixed(2); });
+
+    const list = $("bundles");
+    for (const b of D.bundles) {
+      const el = document.createElement("div");
+      el.className = "bundle";
+      const top = document.createElement("div");
+      top.className = "top";
+      const sw = document.createElement("span"); sw.className = "swatch"; sw.style.background = `rgb(${b.rgb.join(",")})`;
+      const nm = document.createElement("span"); nm.className = "name"; nm.textContent = b.label;
+      top.append(sw, nm);
+      if (b.expected_streamlines != null) {
+        const st = document.createElement("span"); st.className = "stat";
+        st.textContent = `${b.expected_streamlines.toFixed(1)} streamlines`;
+        st.title = "expected bundle streamlines, one launched per seed voxel";
+        top.append(st);
+      }
+      const chips = document.createElement("div"); chips.className = "chips";
+      const chip = (text, on, fn) => {
+        const l = document.createElement("label"); l.className = "chip";
+        const c = document.createElement("input"); c.type = "checkbox"; c.checked = on;
+        c.addEventListener("change", () => fn(c.checked));
+        l.append(c, text); chips.append(l);
+      };
+      if (vIdx("density", b.name) >= 0) { densOn[b.name] = true; chip("Density", true, (on) => { densOn[b.name] = on; applyDensity(); }); }
+      if (mIdx("core", b.name) >= 0) chip("Core", true, (on) => showMesh(mIdx("core", b.name), on));
+      if (hasGlyphs("glyphs", b.name)) chip("Glyphs", true, (on) => setGlyphs(`${b.name}_glyphs.mz3`, on));
+      el.append(top, chips); list.append(el);
+    }
+    if (hasGlyphs("glyphs")) {
+      $("glyph-sec").hidden = false;
+      $("dir-legend").hidden = D.glyph_color !== "direction";
+      if (hasGlyphs("fodf")) { $("fodf-chip").hidden = false; $("fodf").addEventListener("change", (e) => setGlyphs("fodf_glyphs.mz3", e.target.checked)); }
+      $("go").addEventListener("click", goFocus);
+    }
+    for (const btn of $("layout").querySelectorAll("button")) btn.addEventListener("click", () => {
+      $("layout").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === btn));
+      nv.setSliceType(Number(btn.dataset.t));
+    });
+    for (const btn of $("wheel").querySelectorAll("button")) btn.addEventListener("click", () => {
+      $("wheel").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === btn));
+      nv.opts.dragMode = Number(btn.dataset.m);
+    });
+    $("reset").addEventListener("click", () => { nv.scene.pan2Dxyzmm = [0, 0, 0, 1]; nv.scene.volScaleMultiplier = 1; nv.drawScene(); });
+    const ro = $("readout");
+    nv.onLocationChange = (d) => {
+      if (!d || !d.mm) return;
+      ro.textContent = `x ${d.mm[0].toFixed(1)}  y ${d.mm[1].toFixed(1)}  z ${d.mm[2].toFixed(1)} mm`;
+      if (window.followGlyphs) window.followGlyphs([d.mm[0], d.mm[1], d.mm[2]]);
+    };
+    nv.createOnLocationChange && nv.createOnLocationChange();
+    window.nv = nv;   // for the console
+  } catch (err) {
+    status.hidden = false;
+    status.textContent = "Could not draw the scene: " + err;
+    console.error(err);
+  }
+})();
+</script>
+</body>
+</html>

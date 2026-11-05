@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcat-tractography"
+version = "0.1.0"
+description = "MCAT: Markov chain absorbing tractography"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+dependencies = [
+    "numpy>=1.26", "scipy>=1.11", "nibabel>=5", "numba>=0.59", "dipy>=1.9", "scikit-image",
+    "pyAFQ>=3.4",
+    # MITTENS v2 is not on PyPI yet (it builds with a Rust toolchain via maturin)
+    "mittens-dmri @ git+https://github.com/mattcieslak/MITTENS.git",
+]
+
+[project.optional-dependencies]
+viewer = ["ipyniivue>=2.4"]
+test = ["pytest>=8"]
+
+[project.scripts]
+mat = "mat.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mat = ["viewer.html"]
