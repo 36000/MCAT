@@ -23,7 +23,14 @@ def main(argv=None):
 
     from .afq import run
 
-    afq = ParticipantAFQ(a.dwi, a.bval, a.bvec, a.t1, a.output_dir, **json.loads(a.afq_kwargs))
+    kwargs = json.loads(a.afq_kwargs)
+    if "tracking_params" in kwargs:
+        if "odf_model" not in kwargs["tracking_params"]:
+            kwargs["tracking_params"]["odf_model"] = "CSD"
+    else:
+        kwargs["tracking_params"] = {"odf_model": "CSD"}
+
+    afq = ParticipantAFQ(a.dwi, a.bval, a.bvec, a.t1, a.output_dir, **kwargs)
     run(afq, a.n_proc, a.max_mem, a.bundles, a.moments, a.tol, a.angle, not a.single_odf)
 
 
