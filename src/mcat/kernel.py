@@ -11,22 +11,28 @@ sums), L_n the double-ODF look-ahead (the neighbour's Y; 1 for singleODF) and Z_
 normaliser over all outcomes.  A state is (voxel, direction class b); within its class the
 incoming direction is taken as q_{v,b}(e) ~ X_v(e) Y_v(e).  If Z_v(e) = 0 the walker has no
 admissible continuation and dies in white matter ("dead").
+
+Voxels labelled BLOCKED (CSF) are never entered: every path that would exit into one gets
+weight 0, in both doubleODF and singleODF, so the walker's probability goes to its other
+hops through the normaliser Z_v.
 """
 from __future__ import annotations
 
 import numpy as np
 from numba import njit, prange
 
-TRANSIENT, ABSORBING = 1, 2
+TRANSIENT, ABSORBING, BLOCKED = 1, 2, 3   # BLOCKED: CSF, zero transition probability
 
 
 @njit(cache=True)
 def _lookahead_rows(vlin, label, xrow, noff, double_odf, wrows):
     """Row of Y used as look-ahead for each neighbour: -1 none (singleODF: weight 1),
-    -2 no fODF there (weight 0)."""
+    -2 never entered (weight 0): CSF, or no fODF there."""
     for n in range(26):
         w = vlin + noff[n]
-        if not double_odf:
+        if label[w] == BLOCKED:
+            wrows[n] = -2
+        elif not double_odf:
             wrows[n] = -1
         elif label[w] != 0 and xrow[w] >= 0:
             wrows[n] = xrow[w]

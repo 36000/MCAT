@@ -26,7 +26,7 @@ from . import kernel as K
 from .chain import Chain, _Grower
 from .geometry import OFFSETS
 
-log = logging.getLogger("mat")
+log = logging.getLogger("mcat")
 NCOMP = 4          # (M, Q1, Q2, Q3)
 MAX_RATE = 0.95    # slowest allowed decay per step of the moment operator (see stabilize)
 

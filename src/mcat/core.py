@@ -1,4 +1,4 @@
-"""Bundle cores: the cross-section ridge path of a MAT density map.
+"""Bundle cores: the cross-section ridge path of a MCAT density map.
 
 A core is a single curve through the bundle, from one end to the other, that stays on the
 density ridge -- the most visited voxels of each cross-section -- including through bends.
@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 import nibabel as nib
 import numpy as np
 
-log = logging.getLogger("mat")
+log = logging.getLogger("mcat")
 
 OFFS = np.array([(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)
                  if (i, j, k) != (0, 0, 0)])
@@ -139,8 +139,8 @@ def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, f
                 body=1e-2, smooth=1.5):
     """Cross-section ridge path of one bundle (see module docstring).
 
-    density, endpoints  3-D arrays on the same grid (MAT ``density_map``, ``endpoints_map``)
-    start, end          optional boolean endpoint ROIs (MAT ``start_mask``, ``end_mask``)
+    density, endpoints  3-D arrays on the same grid (MCAT ``density_map``, ``endpoints_map``)
+    start, end          optional boolean endpoint ROIs (MCAT ``start_mask``, ``end_mask``)
     floor               voxels with density below floor x peak are left out of the graph
     body                anchors are placed on voxels with density >= body x peak
     """
@@ -206,14 +206,14 @@ def write_core(core, prefix, extra=None):
     nib.streamlines.save(nib.streamlines.Tractogram([core.xyz.astype(np.float32)],
                                                     affine_to_rasmm=np.eye(4)), tck)
     with open(f"{prefix}_desc-core.json", "w") as fh:
-        json.dump(dict(method="cross-section ridge path (mat.core)", ends=core.ends,
+        json.dump(dict(method="cross-section ridge path (mcat.core)", ends=core.ends,
                        n_nodes=int(len(core.xyz)), length_mm=round(core.length_mm, 1),
                        **core.info, **(extra or {})), fh, indent=1)
     return tsv, tck
 
 
 def bundle_files(folder):
-    """{bundle: {prefix, density, endpoints, start, end, odf}} for the MAT outputs under
+    """{bundle: {prefix, density, endpoints, start, end, odf}} for the MCAT outputs under
     ``folder`` (None where a file is missing)."""
     out = {}
     for f in sorted(glob.glob(op.join(folder, "**", "*_desc-density_map.nii.gz"), recursive=True)):
@@ -228,7 +228,7 @@ def bundle_files(folder):
 
 
 def write_cores(folder, n_nodes=100):
-    """Compute and save the core of every bundle under ``folder`` (MAT outputs)."""
+    """Compute and save the core of every bundle under ``folder`` (MCAT outputs)."""
     for name, f in bundle_files(folder).items():
         if f["endpoints"] is None:
             continue

@@ -27,7 +27,7 @@ import numpy as np
 from . import kernel as K
 from .chain import VALID_ENDS
 
-log = logging.getLogger("mat")
+log = logging.getLogger("mcat")
 
 STALL_WINDOW, STALL_RATIO = 200, 0.9   # stalled: remaining mass fell < 10% in 200 steps
 TAIL_MIN_STEPS = 30        # power steps before the Krylov tail may take over (walkers in transit)

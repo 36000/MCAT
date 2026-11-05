@@ -1,6 +1,6 @@
-# MAT: Markov absorbing tractography
+# MCAT: Markov chain absorbing tractography
 
-MAT computes white-matter bundles as exact expectations over infinitely many streamlines, with no sampling.
+MCAT computes white-matter bundles as exact expectations over infinitely many streamlines, with no sampling.
 
 - **The chain.** Probabilistic tracking is treated as an absorbing Markov chain on (white-matter voxel, direction) states. The transitions are the analytic hop geometry of [MITTENS](https://github.com/mattcieslak/MITTENS), with the walker's incoming direction remembered between voxels.
 - **Bundle selection.** Include, exclude and endpoint ROIs are applied with forward and backward passes over that chain. This is transition path theory's reactive density, with inclusion–exclusion for the include ROIs.
@@ -8,31 +8,31 @@ MAT computes white-matter bundles as exact expectations over infinitely many str
 
 ```python
 from AFQ.api.participant import ParticipantAFQ      # or GroupAFQ: every participant in turn
-import mat
+import mcat
 
 afq = ParticipantAFQ(dwi, bval, bvec, t1, output_dir)
-mat.run(afq, n_proc=8, max_mem="16GB")              # -> <output_dir>/mat/
-mat.view(f"{output_dir}/mat", t1=t1_masked, bundles=["LeftArcuate", "LeftCorticospinal"], glyphs=True)
+mcat.run(afq, n_proc=8, max_mem="16GB")              # -> <output_dir>/mcat/
+mcat.view(f"{output_dir}/mcat", t1=t1_masked, bundles=["LeftArcuate", "LeftCorticospinal"], glyphs=True)
 ```
 
-The command line runs pyAFQ and MAT on one participant:
+The command line runs pyAFQ and MCAT on one participant:
 
 ```bash
-mat sub-01_dwi.nii.gz sub-01_dwi.bval sub-01_dwi.bvec sub-01_T1w.nii.gz out/ --n-proc 8 --max-mem 16GB
+mcat sub-01_dwi.nii.gz sub-01_dwi.bval sub-01_dwi.bvec sub-01_T1w.nii.gz out/ --n-proc 8 --max-mem 16GB
 ```
 
 ## Install
 
 ```bash
 pip install maturin                                   # MITTENS v2 builds with Rust (https://rustup.rs)
-pip install "mat-tractography[viewer] @ git+<this repository>"
+pip install "mcat-tractography[viewer] @ git+<this repository>"
 ```
 
 MITTENS v2 (`mittens-dmri`) is not on PyPI yet, so pip builds it from GitHub with your Rust toolchain.
 
 ## Options
 
-| `mat.run(...)` | CLI | default | |
+| `mcat.run(...)` | CLI | default | |
 |---|---|---|---|
 | `n_proc` | `--n-proc` | required | threads |
 | `max_mem` | `--max-mem` | required | memory budget. Bundles are packed into groups that share every pass over the transition matrix; the budget sets how many fit. |
@@ -46,7 +46,7 @@ Any pyAFQ setting goes on the `ParticipantAFQ`; with the CLI, pass it as `--afq-
 
 **Solves that crawl** switch to a Krylov solver automatically, with no setting. A normal bundle loses about 10% of its walker mass per step, so 1e-10 takes 300–500 steps and Krylov never triggers. When nearly everything is walkable (ie, all-WM), walkers circle for thousands of steps. Once power iteration would need 500 or more further steps, or stalls, the rest of the series is solved with BiCGSTAB.
 
-## Outputs (`<output_dir>/mat/`, or `mat-moments/`)
+## Outputs (`<output_dir>/mcat/`, or `mcat-moments/`)
 
 | file | |
 |---|---|
@@ -57,10 +57,10 @@ Any pyAFQ setting goes on the `ParticipantAFQ`; with the CLI, pass it as `--afq-
 | `..._desc-start_mask`, `_desc-end_mask` | the endpoint ROIs used (pyAFQ's `dist_to_atlas` applied) |
 | `..._desc-core_path.tsv`, `_desc-core.tck` | the bundle's core: the cross-section ridge path, 100 nodes |
 | `..._desc-summary.json` | settings, solve diagnostics, mass check |
-| `<sub>_desc-mat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
-| `<sub>_desc-mat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
+| `<sub>_desc-mcat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
+| `<sub>_desc-mcat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
 
-`mat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget. It shows a 3-D render and three slices, each bundle's density on a log scale from 1e-3 of its peak, and its core as a tube.
+`mcat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget. It shows a 3-D render and three slices, each bundle's density on a log scale from 1e-3 of its peak, and its core as a tube.
 
 With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs as glyphs, like fODF glyphs. Where the fODF has a crossing, the glyph shows only the lobe the bundle uses. Glyphs follow the slices: every voxel at or above `glyph_floor` (1e-2 of the peak) gets one, drawn on the three slices through the crosshair, and redrawn as you click or scroll. The slices start at the core's midpoint. Options:
 
@@ -69,15 +69,15 @@ With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs
 - `glyph_norm=False` sizes glyphs by visits instead of normalising each one.
 - `glyph_color` is `"direction"` or `"bundle"`.
 
-`mat.viewer.save_html("bundles.html", folder, glyphs=True, ...)` writes the same scene as a standalone web page to open in any browser or share. It has controls for the layout, each bundle's density, core and glyphs, the opacities, and whether scrolling moves slices or zooms. The data are embedded and the page meshes the glyphs itself. NiiVue loads from a CDN; pass `niivue_js=` a local `niivue.umd.js` (npm `@niivue/niivue`, `dist/`) to embed it and work offline.
+`mcat.viewer.save_html("bundles.html", folder, glyphs=True, ...)` writes the same scene as a standalone web page to open in any browser or share. It has controls for the layout, each bundle's density, core and glyphs, the opacities, and whether scrolling moves slices or zooms. The data are embedded and the page meshes the glyphs itself. NiiVue loads from a CDN; pass `niivue_js=` a local `niivue.umd.js` (npm `@niivue/niivue`, `dist/`) to embed it and work offline.
 
 ## Method
 
-- **Tissue.** As pyAFQ's tracker: walkers move where the WM PVE exceeds 0.4 inside the fODF mask.
+- **Tissue.** As pyAFQ's tracker: walkers move where the WM PVE exceeds 0.4 inside the fODF mask. Other voxels in the mask are grey matter (GM PVE at least the CSF PVE), which absorbs walkers, or CSF, which walkers never enter: every hop into CSF has zero probability, and the walker's other hops share its probability. A walker whose only ways on lead into CSF dies in white matter (invalid).
 - **Geometry (MITTENS v2).**
   - A hop is one voxel long (of the smallest voxel side) and turns less than `angle`.
   - MITTENS enumerates every hop sequence inside a voxel, with the exact volume of start points, on DSI Studio's 642-direction sphere. Anisotropic voxels are exact.
-  - MAT adds each path's last direction class (the walker's memory) and its box of start points (for moments).
+  - MCAT adds each path's last direction class (the walker's memory) and its box of start points (for moments).
 - **Transitions.**
   - A state is (voxel, one of 26 direction classes). Its transitions are sums over MITTENS paths of the fODF's turning probabilities times the doubleODF look-ahead, conditioned on the incoming direction.
   - Each transition is stored as a 1-byte slot into its class's template of (neighbour, class) pairs, plus a float64 weight. One copy serves forward (scatter) and backward (gather) steps.

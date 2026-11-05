@@ -68,7 +68,7 @@
 </head>
 <body>
 <header>
-  <span class="mark">MAT</span>
+  <span class="mark">MCAT</span>
   <span class="subject" id="subject"></span>
   <span class="readout" id="readout"></span>
 </header>
@@ -107,15 +107,15 @@
   </aside>
 </main>
 __NIIVUE__
-<script type="application/json" id="mat-data">__DATA__</script>
+<script type="application/json" id="mcat-data">__DATA__</script>
 <script>
 (async () => {
-  const D = JSON.parse(document.getElementById("mat-data").textContent);
+  const D = JSON.parse(document.getElementById("mcat-data").textContent);
   const $ = (id) => document.getElementById(id);
   const status = $("status");
   $("subject").textContent = D.subject;
   if (!window.niivue) {
-    status.textContent = "NiiVue did not load (offline?). Save the page with mat.viewer.save_html(..., niivue_js=...) to embed it.";
+    status.textContent = "NiiVue did not load (offline?). Save the page with mcat.viewer.save_html(..., niivue_js=...) to embed it.";
     return;
   }
   const { Niivue, NVImage, NVMesh, SLICE_TYPE, SHOW_RENDER } = window.niivue;

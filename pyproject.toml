@@ -21,10 +21,10 @@ viewer = ["ipyniivue>=2.4"]
 test = ["pytest>=8"]
 
 [project.scripts]
-mat = "mat.cli:main"
+mcat = "mcat.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-mat = ["viewer.html"]
+mcat = ["viewer.html"]

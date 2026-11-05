@@ -22,9 +22,10 @@ from scipy import ndimage
 from . import kernel as K
 from .geometry import OFFSETS, build_geometry, pmf_and_cone_mass, seed_peaks
 
-log = logging.getLogger("mat")
+log = logging.getLogger("mcat")
 
-ABSORB_CLASSES = ("outside", "gm", "csf", "edge")  # absorbing class ids 0..3
+ABSORB_CLASSES = ("outside", "gm", "csf", "edge")  # tissue class ids 0..3 (csf: never entered)
+CSF = ABSORB_CLASSES.index("csf")
 VALID_ENDS = (1, 3)                                 # grey matter and brain edge
 
 
@@ -91,7 +92,9 @@ class Chain:
         """sh            (X, Y, Z, C) SH coefficients (DIPY descoteaux07; symmetric or full basis)
         zooms         voxel sizes (mm)
         transient     (X, Y, Z) bool: white matter, where walkers move
-        absorb_class  (X, Y, Z) int: 0 outside, 1 GM, 2 CSF, 3 brain edge (where not transient)
+        absorb_class  (X, Y, Z) int: 0 outside, 1 GM, 2 CSF, 3 brain edge (where not transient).
+                      GM and edge absorb walkers; CSF has zero transition probability (walkers
+                      never step there; their other hops are renormalised)
         cache         optional .npz: transitions are loaded from it when inputs and config
                       match, else built and saved there"""
         if cfg.moments and cls is Chain:
@@ -109,6 +112,7 @@ class Chain:
         cls_p[1:-1, 1:-1, 1:-1] = absorb_class
         label = np.zeros(pshape, np.int8)
         label[cls_p > 0] = K.ABSORBING
+        label[cls_p == CSF] = K.BLOCKED
         label[trans_p] = K.TRANSIENT
         self.label = label.ravel()
         self.t_lin = np.flatnonzero(trans_p.ravel()).astype(np.int64)
@@ -198,6 +202,7 @@ class Chain:
     def _fingerprint(self, sh, zooms, transient, absorb_class):
         h = hashlib.sha1(json.dumps(self.cfg.key(), sort_keys=True).encode())
         h.update(type(self).__name__.encode())
+        h.update(b"csf-blocked")   # transitions changed: caches built before ignored CSF blocking
         for a in (np.ascontiguousarray(sh, np.float32), np.asarray(zooms, np.float64),
                   transient.astype(np.uint8), np.asarray(absorb_class, np.int8)):
             h.update(np.ascontiguousarray(a).tobytes())

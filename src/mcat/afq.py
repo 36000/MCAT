@@ -1,8 +1,8 @@
-"""MAT on top of pyAFQ.  Everything except the Markov chain comes from a pyAFQ
+"""MCAT on top of pyAFQ.  Everything except the Markov chain comes from a pyAFQ
 ``ParticipantAFQ`` (or each participant of a ``GroupAFQ``): the fODF pyAFQ tracks on, the
 tissue PVE and brain mask, the white/grey-matter interface (seeds), the bundle
-definitions, and their ROIs warped to the subject.  Outputs go to ``<output_dir>/mat``
-(``mat-moments`` with spatial moments), next to pyAFQ's own.
+definitions, and their ROIs warped to the subject.  Outputs go to ``<output_dir>/mcat``
+(``mcat-moments`` with spatial moments), next to pyAFQ's own.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from .chain import ABSORB_CLASSES, Chain, ChainConfig
 from .geometry import visitation_odf
 from .solve import prepare_launches, segment_bundles
 
-log = logging.getLogger("mat")
+log = logging.getLogger("mcat")
 WM_THRESHOLD = 0.4   # pyAFQ's tracker stops where WM PVE <= gm_threshold (0.4)
 ODF_FLOOR = 1e-3     # visitation ODFs are written where the density reaches this x its peak
 
@@ -46,7 +46,8 @@ def _on_grid(img, ref, order=1):
 def tissue_labels(sh_img, pve_img, brain_mask_img=None):
     """As pyAFQ's tracker: walkers move where WM PVE > 0.4 inside the fODF mask; the mask's
     inner boundary counts as grey matter ("edge", so fibres leaving the field end validly);
-    other in-mask voxels absorb as GM (GM PVE >= CSF PVE) or CSF.
+    other in-mask voxels are GM (GM PVE >= CSF PVE), which absorbs walkers, or CSF, which
+    walkers never enter (zero transition probability).
     Returns transient, absorbing class (0 outside, 1 GM, 2 CSF, 3 edge), dseg (1 WM, 2 GM,
     3 CSF, 4 edge)."""
     from skimage.segmentation import find_boundaries
@@ -75,7 +76,7 @@ def seal_26(mask):
 
 
 def bundle_specs(afq, ref_img, transient, names=None):
-    """MAT bundle specs from pyAFQ's bundle dictionary: include / exclude ROIs (sealed), start /
+    """MCAT bundle specs from pyAFQ's bundle dictionary: include / exclude ROIs (sealed), start /
     end ROIs grown by pyAFQ's ``dist_to_atlas``, and the other hemisphere excluded for bundles
     that may not cross the midline.  Other pyAFQ criteria (curvature, length, cleaning) are
     streamline-based and do not apply."""
@@ -116,7 +117,7 @@ def _bytes(x):
 
 def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0, double_odf=True,
         cores=True):
-    """Segment pyAFQ's bundles with MAT.
+    """Segment pyAFQ's bundles with MCAT.
 
     afq         ``ParticipantAFQ`` or ``GroupAFQ`` (every participant in turn)
     n_proc      threads
@@ -127,7 +128,7 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
     angle       maximum turn per one-voxel hop (degrees)
     double_odf  weight each hop by the fODF where it lands (False: singleODF, like pyAFQ's
                 first-order probabilistic tracker)
-    cores       also write each bundle's ridge-path core (mat.core)
+    cores       also write each bundle's ridge-path core (mcat.core)
     Returns {bundle: BundleResult} (a dict per participant for a GroupAFQ)."""
     import numba
 
@@ -139,10 +140,10 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
     sh_img = nib.load(afq.export(f"{afq.export('tracking_params')['odf_model'].lower()}_params"))
     transient, absorb, dseg = tissue_labels(sh_img, nib.load(afq.export("pve_internal")),
                                             nib.load(afq.export("brain_mask")))
-    out = Path(afq.kwargs["output_dir"]) / ("mat-moments" if moments else "mat")
+    out = Path(afq.kwargs["output_dir"]) / ("mcat-moments" if moments else "mcat")
     out.mkdir(parents=True, exist_ok=True)
     stem = str(out / Path(afq.kwargs["base_fname"]).name)
-    nib.save(nib.Nifti1Image(dseg, sh_img.affine), f"{stem}_desc-mat_dseg.nii.gz")
+    nib.save(nib.Nifti1Image(dseg, sh_img.affine), f"{stem}_desc-mcat_dseg.nii.gz")
     specs = bundle_specs(afq, sh_img, transient, bundles)
     cfg = ChainConfig(angle=angle, double_odf=double_odf, moments=moments)
     sh = np.asarray(sh_img.dataobj, np.float32)
@@ -190,12 +191,12 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
         log.info("%s: %.2f expected streamlines", res.name, i["expected_bundle_streamlines"])
 
     results = segment_bundles(chain, specs, launches, tol=tol, max_mem=_bytes(max_mem), on_result=write)
-    with open(f"{stem}_desc-mat_table.tsv", "w", newline="") as fh:
+    with open(f"{stem}_desc-mcat_table.tsv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t")
         w.writeheader()
         w.writerows(rows)
     if cores:
         from .core import write_cores
         write_cores(out)
-    log.info("MAT: %d bundles in %.0fs -> %s", len(results), time.time() - t0, out)
+    log.info("MCAT: %d bundles in %.0fs -> %s", len(results), time.time() - t0, out)
     return results

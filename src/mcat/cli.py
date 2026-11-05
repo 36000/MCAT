@@ -1,4 +1,4 @@
-"""``mat``: run pyAFQ (for its derivatives) and MAT on one participant."""
+"""``mcat``: run pyAFQ (for its derivatives) and MCAT on one participant."""
 import argparse
 import json
 import logging
