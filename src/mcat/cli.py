@@ -16,6 +16,8 @@ def main(argv=None):
     p.add_argument("--angle", type=float, default=35.0, help="maximum turn per one-voxel hop (deg)")
     p.add_argument("--single-odf", action="store_true", help="first-order hops (pyAFQ-like), not doubleODF")
     p.add_argument("--bundles", nargs="+", help="pyAFQ bundle names (default: all)")
+    p.add_argument("--no-viz", action="store_true",
+                   help="skip the collage and viewer pages (written by default)")
     p.add_argument("--afq-kwargs", default="{}",
                    help="extra ParticipantAFQ arguments: JSON, or a Python expression giving a dict, "
                         "with afd (AFQ.data.fetch), abd (AFQ.api.bundle_dict) and the "
@@ -35,7 +37,7 @@ def main(argv=None):
         kwargs["tracking_params"] = {"odf_model": "CSD"}
 
     afq = ParticipantAFQ(a.dwi, a.bval, a.bvec, a.t1, a.output_dir, **kwargs)
-    run(afq, a.n_proc, a.max_mem, a.bundles, a.moments, a.tol, a.angle, not a.single_odf)
+    run(afq, a.n_proc, a.max_mem, a.bundles, a.moments, a.tol, a.angle, not a.single_odf, viz=not a.no_viz)
 
 
 def afq_kwargs(text):

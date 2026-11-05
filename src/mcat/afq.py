@@ -106,6 +106,29 @@ def bundle_specs(afq, ref_img, transient, names=None):
     return specs
 
 
+def visualize(out, stem, bundles, fodf=None):
+    """The run's figures: a MIP collage of the bundles, a viewer page with all of them
+    (densities and cores), and a page per bundle with its glyphs (and the fODF, if given).
+    Failures are logged, not raised: the bundles are already on disk."""
+    from .collage import write_collage
+    from .core import bundle_files
+    from .viewer import save_html
+
+    jobs = [("collage", lambda: write_collage(out, f"{stem}_desc-mcat_collage.png", bundles)),
+            ("viewer", lambda: save_html(f"{stem}_desc-mcat_view.html", out, bundles=bundles))]
+    files = bundle_files(out)
+    for b in bundles:
+        if b in files:   # glyphs from 1e-2 of the peak (the slider can raise it); keeps pages small
+            jobs.append((f"{b} viewer", lambda b=b: save_html(
+                f"{files[b]['prefix']}_desc-view.html", out, bundles=[b], glyphs=True, fodf=fodf,
+                glyph_range=1e-2)))
+    for what, job in jobs:
+        try:
+            log.info("%s: %s", what, job())
+        except Exception as err:  # noqa: BLE001
+            log.warning("%s not written: %s", what, err)
+
+
 def _bytes(x):
     if isinstance(x, str):
         m = re.fullmatch(r"\s*([\d.]+)\s*([kmgt]?)b?\s*", x.lower())
@@ -116,7 +139,7 @@ def _bytes(x):
 
 
 def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0, double_odf=True,
-        cores=True):
+        cores=True, viz=True):
     """Segment pyAFQ's bundles with MCAT.
 
     afq         ``ParticipantAFQ`` or ``GroupAFQ`` (every participant in turn)
@@ -129,15 +152,19 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
     double_odf  weight each hop by the fODF where it lands (False: singleODF, like pyAFQ's
                 first-order probabilistic tracker)
     cores       also write each bundle's ridge-path core (mcat.core)
+    viz         also write a MIP collage of all bundles (PNG), a viewer page of all bundles
+                (densities and cores), and one page per bundle with its visitation-ODF glyphs
+                and the fODF (mcat.viewer.save_html).  Pages load NiiVue from a CDN.
     Returns {bundle: BundleResult} (a dict per participant for a GroupAFQ)."""
     import numba
 
     if hasattr(afq, "pAFQ_list"):
-        return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf, cores)
+        return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf, cores, viz)
                 for s, t, p in zip(afq.valid_sub_list, afq.valid_ses_list, afq.pAFQ_list)}
     numba.set_num_threads(max(1, min(int(n_proc), numba.config.NUMBA_NUM_THREADS)))
     t0 = time.time()
-    sh_img = nib.load(afq.export(f"{afq.export('tracking_params')['odf_model'].lower()}_params"))
+    sh_path = afq.export(f"{afq.export('tracking_params')['odf_model'].lower()}_params")
+    sh_img = nib.load(sh_path)
     transient, absorb, dseg = tissue_labels(sh_img, nib.load(afq.export("pve_internal")),
                                             nib.load(afq.export("brain_mask")))
     out = Path(afq.kwargs["output_dir"]) / ("mcat-moments" if moments else "mcat")
@@ -198,5 +225,7 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
     if cores:
         from .core import write_cores
         write_cores(out)
+    if viz:
+        visualize(out, stem, [re.sub(r"[^A-Za-z0-9]", "", n) for n in results], sh_path)
     log.info("MCAT: %d bundles in %.0fs -> %s", len(results), time.time() - t0, out)
     return results

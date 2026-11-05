@@ -44,6 +44,15 @@ def _nifti_bytes(arr, affine, dtype=np.uint8):
     return gzip.compress(img.to_bytes(), compresslevel=6)
 
 
+DENSITY_RANGE = 1e-6   # density maps are encoded down to this x the peak (the slider's range)
+GLYPH_RANGE = 1e-3     # glyph voxels are kept down to this x the peak (mcat.afq.ODF_FLOOR)
+
+
+def _u8_level(frac, enc_floor):
+    """The uint8 level of log_density_u8(..., enc_floor) at frac x the peak."""
+    return float(1 + 254 * (np.log10(frac) - np.log10(enc_floor)) / -np.log10(enc_floor))
+
+
 def log_density_u8(density, floor=1e-3):
     """density -> uint8: 0 below floor x peak, 1..255 for log10(density / peak) in [log10 floor, 0]."""
     d = np.clip(np.nan_to_num(np.asarray(density, float)), 0, None)
@@ -56,7 +65,8 @@ def log_density_u8(density, floor=1e-3):
 
 
 def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_opacity=0.55,
-          core_radius=1.2, glyphs=False, glyph_planes=None, glyph_floor=1e-2, glyph_color=None,
+          core_radius=1.2, glyphs=False, glyph_planes=None, glyph_floor=1e-2, glyph_range=GLYPH_RANGE,
+          glyph_color=None, isosurface=False,
           glyph_norm=True, max_glyphs=4000, fodf=None, write_missing_cores=True):
     """What ``view`` and ``save_html`` draw, as data: volumes and meshes (file bytes plus
     display settings, each with its role), glyph sets (voxels and SH coefficients, meshed
@@ -74,12 +84,16 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
                      start at the first core's midpoint; (x, y, z) in mm: start there;
                      "all": every voxel at once, fixed (heavy; 2-D views still show one slice)
     glyph_floor      voxels whose density is below this x the bundle's peak get no glyph
+    glyph_range      voxels down to this x the peak are kept, so a viewer can lower glyph_floor
+                     live (default GLYPH_RANGE, 1e-3; raise it for smaller pages)
     glyph_color      "direction" (red left-right, green front-back, blue up-down) or "bundle"
                      (its core's colour); default: direction for one bundle, else bundle
     glyph_norm       each glyph scaled to its own maximum, as fODF glyphs usually are (False:
                      size proportional to the visits, the bundle's largest filling its voxel).
                      Glyphs read best zoomed in on a slice, with show_density=False.
     max_glyphs       per bundle with glyph_planes="all"; the densest voxels are kept
+    isosurface       also draw each bundle's density as an opaque surface at ``floor`` x its
+                     peak, in its colour (the standalone page redraws it at its slider's level)
     fodf             an SH image on the same grid (e.g. pyAFQ's ``*_model-csd_param-wm_dwimap``):
                      translucent grey glyphs at the same voxels, for comparison
     write_missing_cores  compute cores that are not on disk yet and save them next to the maps
@@ -98,7 +112,7 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
         cand = sorted(glob.glob(op.join(folder, "**", "*_dseg.nii.gz"), recursive=True),
                       key=lambda x: "_desc-mcat_dseg" not in x)
         t1 = cand[0] if cand else None
-    S = dict(volumes=[], meshes=[], glyphs=[], bundles=[], focus=None, slab=None,
+    S = dict(volumes=[], meshes=[], glyphs=[], bundles=[], focus=None, slab=None, isosurface=bool(isosurface),
              subject=op.basename(next(iter(files.values()))["prefix"]).split("_bundle-")[0])
     if t1 is not None:
         with open(t1, "rb") as fh:
@@ -123,10 +137,15 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
                         expected_streamlines=info.get("result", {}).get("expected_bundle_streamlines"))
         S["bundles"].append(meta)
         if show_density or not S["volumes"]:
+            # encoded down to DENSITY_RANGE; cal_min shows it from `floor`, so a viewer can move it
+            enc = min(floor, DENSITY_RANGE)
             S["volumes"].append(dict(role="density", bundle=name, name=f"{name}_logdensity.nii.gz",
-                                     data=_nifti_bytes(log_density_u8(d, floor), img.affine), colormap=cmap,
-                                     cal_min=1, cal_max=255,
+                                     data=_nifti_bytes(log_density_u8(d, enc), img.affine), colormap=cmap,
+                                     cal_min=_u8_level(floor, enc), cal_max=255, floor=floor, enc_floor=enc,
                                      opacity=density_opacity if (S["volumes"] or not show_density) else 1.0))
+        if isosurface and d.max() > 0:
+            S["meshes"].append(dict(role="surface", bundle=name, name=f"{name}_surface.mz3", rgba255=[*rgb, 255],
+                                    opacity=1.0, data=isosurface_mz3(d / d.max(), floor, img.affine, rgb)))
         # core: written by mcat.run; computed here if missing
         tck, xyz = f["prefix"] + "_desc-core.tck", None
         if op.exists(tck):
@@ -148,7 +167,8 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
             log.warning("%s: no visitation ODF on disk (written by mcat.run since 2026-11-04)", name)
             continue
         static = isinstance(glyph_planes, str) and glyph_planes == "all"
-        ijk = np.argwhere(d >= glyph_floor * d.max())
+        keep = glyph_floor if static else min(glyph_floor, glyph_range)
+        ijk = np.argwhere(d >= keep * d.max())
         if static and len(ijk) > max_glyphs:
             log.warning("%s: %d glyph voxels, showing the densest %d", name, len(ijk), max_glyphs)
             ijk = ijk[np.argsort(d[tuple(ijk.T)])[::-1][:max_glyphs]]
@@ -161,15 +181,21 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
             S["slab"] = float(min(img.header.get_zooms()[:3]))
         coef = np.asarray(nib.load(f["odf"]).dataobj, np.float32)[tuple(ijk.T)]
         S["glyphs"].append(dict(role="glyphs", bundle=name, name=f"{name}_glyphs.mz3", opacity=1.0,
-                                ijk=ijk.astype(np.int32), coef=coef, norm=glyph_norm,
+                                ijk=ijk.astype(np.int32), coef=coef, norm=glyph_norm, floor=glyph_floor,
+                                rel=(d[tuple(ijk.T)] / d.max()).astype(np.float32),
                                 rgb=None if glyph_color == "direction" else list(rgb)))
+        S["glyph_floor"], S["glyph_range"] = glyph_floor, keep
     if fodf is not None and every:
         fimg = nib.load(fodf)
         if fimg.shape[:3] != d.shape or not np.allclose(fimg.affine, img.affine, atol=1e-3):
             raise ValueError(f"{fodf} is not on the bundles' grid {d.shape}")
-        ijk = np.unique(np.concatenate(every), axis=0).astype(np.int32)
+        ijk, inv = np.unique(np.concatenate(every), axis=0, return_inverse=True)
+        rel = np.zeros(len(ijk), np.float32)     # shown where any bundle's glyph is
+        np.maximum.at(rel, inv.ravel(), np.concatenate([g["rel"] for g in S["glyphs"]]))
+        ijk = ijk.astype(np.int32)
         S["glyphs"].append(dict(role="fodf", name="fodf_glyphs.mz3", opacity=0.45, ijk=ijk, norm=True,
-                                coef=np.asarray(fimg.dataobj, np.float32)[tuple(ijk.T)], rgb=[150, 150, 150]))
+                                floor=glyph_floor, rel=rel, rgb=[150, 150, 150],
+                                coef=np.asarray(fimg.dataobj, np.float32)[tuple(ijk.T)]))
     for g in S["glyphs"]:      # largest radius of the set, for glyph_norm=False
         g["vmax"] = float(max(_odf_max(g["coef"]), 1e-30))
     if S["glyphs"]:
@@ -188,22 +214,22 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
 
 
 def view(folder, height=640, **kwargs):
-    """ipyniivue ``NiiVue`` widget with the MCAT bundles under ``folder``: a 3-D render and
-    three slices.  ``kwargs``: ``scene``'s options (bundles, t1, floor, glyphs, fodf, ...),
+    """ipyniivue ``NiiVue`` widget with the MCAT bundles under ``folder``: the three slices
+    and a 3-D render in an equal 2 x 2 grid.  ``kwargs``: ``scene``'s options (bundles, t1, floor, glyphs, fodf, ...),
     then any ``ipyniivue.NiiVue`` option (e.g. back_color=(1, 1, 1, 1))."""
     import asyncio
     import inspect
 
-    from ipyniivue import Mesh, NiiVue, ShowRender, SliceType, Volume
+    from ipyniivue import Mesh, MultiplanarType, NiiVue, ShowRender, SliceType, Volume
 
     own = set(inspect.signature(scene).parameters) - {"folder"}
     S = scene(folder, **{k: v for k, v in kwargs.items() if k in own})
     nv_options = {k: v for k, v in kwargs.items() if k not in own}
-    # big 3-D render on the left, the three slices beside it; meshes show through the volume
-    # render (x-ray) so cores and glyphs are visible inside the bundles
+    # the three slices and the 3-D render as an equal 2 x 2 grid; meshes show through the
+    # volume render (x-ray) so cores and glyphs are visible inside the bundles
     opts = dict(back_color=(0, 0, 0, 1), slice_type=SliceType.MULTIPLANAR,
-                multiplanar_show_render=ShowRender.ALWAYS, is_colorbar=False,
-                hero_image_fraction=0.6, hero_slice_type=SliceType.RENDER, mesh_xray=0.5,
+                multiplanar_show_render=ShowRender.ALWAYS, multiplanar_layout=MultiplanarType.GRID,
+                multiplanar_equal_size=True, hero_image_fraction=0.0, is_colorbar=False, mesh_xray=0.5,
                 mesh_thickness_on_2d=S["slab"] or 4.0)
     opts.update(nv_options)
     nv = NiiVue(height=height, **opts)
@@ -265,6 +291,7 @@ def save_html(path, folder, title=None, niivue_js=None, **kwargs):
     from .geometry import _sh_basis
 
     S = scene(folder, **kwargs)
+    S["meshes"] = [m for m in S["meshes"] if m["role"] != "surface"]   # the page draws them live
     b64 = lambda a, t: base64.b64encode(np.ascontiguousarray(a, t).tobytes()).decode()  # noqa: E731
     for item in S["volumes"] + S["meshes"]:
         item["data"] = base64.b64encode(item["data"]).decode()
@@ -279,7 +306,7 @@ def save_html(path, folder, title=None, niivue_js=None, **kwargs):
                            basis={str(k): b64(_sh_basis(u, k), "<f4") for k in widths})
         for g in S["glyphs"]:
             g["K"] = int(g["coef"].shape[1])
-            g["ijk"], g["coef"] = b64(g["ijk"], "<i4"), b64(g["coef"], "<f4")
+            g["ijk"], g["coef"], g["rel"] = b64(g["ijk"], "<i4"), b64(g["coef"], "<f4"), b64(g["rel"], "<f4")
     title = title or f"MCAT \u00b7 {S['subject']}"
     if niivue_js is None:
         lib = f'<script src="{NIIVUE_CDN}"></script>'
@@ -305,10 +332,12 @@ def _odf_max(coef, sphere="symmetric362"):
     return max(float(np.max(np.asarray(coef[s:s + 4096], float) @ B)) for s in range(0, len(coef), 4096))
 
 
-def glyph_mesh(g, affine, c=None):
+def glyph_mesh(g, affine, c=None, floor=None):
     """MZ3 bytes of a glyph set (from ``scene``) on the three slices through voxel c (all
-    voxels if None), or None if there are none there."""
+    voxels if None), where the density reaches ``floor`` x the peak (default: the set's
+    glyph_floor), or None if there are none there."""
     on = np.ones(len(g["ijk"]), bool) if c is None else (g["ijk"] == np.asarray(c)).any(1)
+    on &= g["rel"] >= (g["floor"] if floor is None else floor)
     if not on.any():
         return None
     return glyph_mz3(g["coef"][on], g["ijk"][on], affine, rgb=g["rgb"], norm=g["norm"], vmax=g["vmax"])
@@ -347,9 +376,26 @@ def glyph_mz3(coef, ijk, affine, rgb=None, norm=True, scale=1.0, sphere="symmetr
     used[tri.ravel()] = True
     tri = (np.cumsum(used) - 1)[tri]
     verts, rgba = verts[used], rgba[used]
+    return _mz3(tri, verts, rgba)
+
+
+def _mz3(tri, verts, rgba):
+    """Gzipped MZ3 (NiiVue's native mesh format): triangles, vertices, per-vertex RGBA."""
     head = struct.pack("<HHIII", 23117, 7, len(tri), len(verts), 0)   # faces | vertices | RGBA
-    body = tri.astype("<u4").tobytes() + verts.astype("<f4").tobytes() + rgba.tobytes()
+    body = (np.asarray(tri).astype("<u4").tobytes() + np.asarray(verts).astype("<f4").tobytes()
+            + np.asarray(rgba, np.uint8).tobytes())
     return gzip.compress(head + body, compresslevel=6)
+
+
+def isosurface_mz3(values, level, affine, rgb):
+    """Gzipped MZ3 of the surface where ``values`` crosses ``level`` (marching cubes, closed
+    at the volume's edges), in world mm, one colour."""
+    from skimage.measure import marching_cubes
+
+    v = np.pad(np.asarray(values, np.float32), 1)
+    verts, faces, _, _ = marching_cubes(v, level=level)
+    verts = nib.affines.apply_affine(affine, verts - 1.0)
+    return _mz3(faces, verts, np.tile([*rgb, 255], (len(verts), 1)))
 
 
 def tube_obj(xyz, radius=1.0, sides=12):

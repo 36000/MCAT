@@ -41,6 +41,7 @@ MITTENS v2 (`mittens-dmri`) is not on PyPI yet, so pip builds it from GitHub wit
 | `angle` | `--angle` | 35 | maximum turn per one-voxel hop (degrees). |
 | `double_odf` | `--single-odf` | doubleODF | `--single-odf` gives first-order hops (see [MITTENS](https://github.com/mattcieslak/MITTENS))|
 | `bundles` | `--bundles` | all in pyAFQ's bundle dictionary | pyAFQ names, e.g. "Left Arcuate"; output files drop the spaces (`bundle-LeftArcuate`) |
+| `viz` | `--no-viz` | on | the collage and viewer pages below |
 
 Any pyAFQ setting goes on the `ParticipantAFQ`; with the CLI, pass it as `--afq-kwargs`. That covers the fODF model (`tracking_params={"odf_model": ...}`), the PVE, custom bundle dictionaries including subject-space ROIs, and `segmentation_params={"dist_to_atlas": ...}`. `--afq-kwargs` takes JSON, or a Python expression that gives a dict, for settings that are Python objects. The expression sees `afd` (`AFQ.data.fetch`), `abd` (`AFQ.api.bundle_dict`), the `AFQ.definitions` image and mapping classes, `np` and `nib`. For example, an infant run:
 
@@ -65,8 +66,11 @@ mcat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
 | `..._desc-summary.json` | settings, solve diagnostics, mass check |
 | `<sub>_desc-mcat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
 | `<sub>_desc-mcat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
+| `<sub>_desc-mcat_collage.png` | every bundle's density as sagittal, coronal and axial maximum-intensity projections, log scale (`viz`) |
+| `<sub>_desc-mcat_view.html` | viewer page with every bundle: densities and cores (`viz`) |
+| `..._bundle-<Name>_desc-view.html` | viewer page for one bundle, with its visitation-ODF glyphs and the fODF (`viz`) |
 
-`mcat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget. It shows a 3-D render and three slices, each bundle's density on a log scale from 1e-3 of its peak, and its core as a tube.
+`mcat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget. It shows the three slices and a 3-D render as an equal 2 × 2 grid, each bundle's density on a log scale from 1e-3 of its peak, and its core as a tube.
 
 With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs as glyphs, like fODF glyphs. Where the fODF has a crossing, the glyph shows only the lobe the bundle uses. Glyphs follow the slices: every voxel at or above `glyph_floor` (1e-2 of the peak) gets one, drawn on the three slices through the crosshair, and redrawn as you click or scroll. The slices start at the core's midpoint. Options:
 
@@ -75,7 +79,7 @@ With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs
 - `glyph_norm=False` sizes glyphs by visits instead of normalising each one.
 - `glyph_color` is `"direction"` or `"bundle"`.
 
-`mcat.viewer.save_html("bundles.html", folder, glyphs=True, ...)` writes the same scene as a standalone web page to open in any browser or share. It has controls for the layout, each bundle's density, core and glyphs, the opacities, and whether scrolling moves slices or zooms. The data are embedded and the page meshes the glyphs itself. NiiVue loads from a CDN; pass `niivue_js=` a local `niivue.umd.js` (npm `@niivue/niivue`, `dist/`) to embed it and work offline.
+`mcat.viewer.save_html("bundles.html", folder, glyphs=True, ...)` writes the same scene as a standalone web page to open in any browser or share. It has controls for the layout, each bundle's density, core and glyphs, the opacities, and whether scrolling moves slices or zooms. Two log-scale sliders set the faintest density shown (down to 1e-6 of each bundle's peak) and the faintest voxel that gets a glyph (down to 1e-3). A checkbox draws each bundle as an opaque surface at the density slider's level, redrawn as the slider moves. In the notebook widget, `isosurface=True` draws that surface at `floor`. The data are embedded and the page meshes the glyphs itself. NiiVue loads from a CDN; pass `niivue_js=` a local `niivue.umd.js` (npm `@niivue/niivue`, `dist/`) to embed it and work offline.
 
 ## Method
 
