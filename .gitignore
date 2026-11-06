@@ -73,6 +73,8 @@ venv.bak/
 
 # Docs builds
 docs/_build/
+docs/_generated/
+docs/animations/_cache/
 site/
 
 # Editors and OS

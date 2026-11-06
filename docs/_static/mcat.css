@@ -1,0 +1,14 @@
+/* MCAT docs */
+figure.mcat-animation video.mcat-video,
+figure.mcat-animation img.mcat-video {
+  max-width: 100%;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 6px;
+  background: white;
+}
+figure.mcat-animation { margin: 1.5rem 0; }
+figure.mcat-animation figcaption { text-align: left; }
+.mcat-placeholder { font-style: italic; color: var(--pst-color-text-muted); }
+html[data-theme="dark"] figure.mcat-animation video.mcat-video,
+html[data-theme="dark"] .bd-content img { filter: none; }
+.bd-main .bd-content .bd-article-container { max-width: 64rem; }
