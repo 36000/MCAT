@@ -15,6 +15,7 @@ pyAFQ provides the fODF, tissue, seeds, bundle definitions and warped ROIs.
 from .afq import run
 from .chain import Chain, ChainConfig
 from .core import bundle_core
+from .fields import BundleFields, endpoint_patches, flux_orientation, restrict_endpoints
 from .solve import prepare_launches, segment_bundles
 
 
@@ -25,4 +26,5 @@ def view(*args, **kwargs):
     return _view(*args, **kwargs)
 
 
-__all__ = ["Chain", "ChainConfig", "bundle_core", "prepare_launches", "run", "segment_bundles", "view"]
+__all__ = ["BundleFields", "Chain", "ChainConfig", "bundle_core", "endpoint_patches", "flux_orientation",
+           "prepare_launches", "restrict_endpoints", "run", "segment_bundles", "view"]
