@@ -116,7 +116,7 @@ def _bytes(x):
 
 
 def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0, double_odf=True,
-        cores=True):
+        cores=True, flux=False):
     """Segment pyAFQ's bundles with MCAT.
 
     afq         ``ParticipantAFQ`` or ``GroupAFQ`` (every participant in turn)
@@ -129,11 +129,16 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
     double_odf  weight each hop by the fODF where it lands (False: singleODF, like pyAFQ's
                 first-order probabilistic tracker)
     cores       also write each bundle's ridge-path core (mcat.core)
+    flux        also write each bundle's edge flux (mcat.fields): the expected streamline steps
+                from every voxel into each of its 26 neighbours, and the flux through each
+                voxel.  Not with moments.  The fields themselves are not kept here; use
+                ``segment_bundles(keep_fields=True)`` to work with them.
     Returns {bundle: BundleResult} (a dict per participant for a GroupAFQ)."""
     import numba
 
     if hasattr(afq, "pAFQ_list"):
-        return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf, cores)
+        return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf,
+                                        cores, flux)
                 for s, t, p in zip(afq.valid_sub_list, afq.valid_ses_list, afq.pAFQ_list)}
     numba.set_num_threads(max(1, min(int(n_proc), numba.config.NUMBA_NUM_THREADS)))
     t0 = time.time()
@@ -169,6 +174,15 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
         odf = np.zeros(chain.shape + coef.shape[1:], np.float32)
         odf[ijk] = coef
         maps["visitodf"] = (odf, "dwimap")
+        if res.fields is not None:
+            f26 = res.fields.edge_flux()
+            maps["throughflux"] = (chain.to_volume(res.fields.through_flux(f26)), "map")
+            flux = np.zeros(chain.shape + (26,), np.float32)
+            flux[tuple((np.stack(np.unravel_index(chain.t_lin, chain.pshape), 1) - 1).T)] = f26
+            maps["edgeflux"] = (flux, "map")
+            res.info["flux_conservation"] = {k: v for k, v in res.fields.conservation(f26).items()
+                                             if not isinstance(v, np.ndarray)}
+            res.fields = None
         for desc, (vol, suffix) in maps.items():
             nib.save(nib.Nifti1Image(vol, sh_img.affine), f"{b}_desc-{desc}_{suffix}.nii.gz")
         for k in ("start", "end"):
@@ -181,7 +195,10 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
                            endpoints="expected bundle endpoints per voxel (two per streamline)",
                            visitodf="the walkers' directions per voxel: SH (descoteaux07, legacy, "
                                     "lmax 8), expected visits per steradian",
-                           seedprob="P(the streamline seeded here belongs to the bundle)"), fh, indent=1)
+                           seedprob="P(the streamline seeded here belongs to the bundle)",
+                           **({"throughflux": "expected bundle-streamline steps leaving each voxel",
+                               "edgeflux": "the same per neighbour: 26 volumes, mcat.geometry.OFFSETS order"}
+                              if flux else {})), fh, indent=1)
         i = res.info
         rows.append(dict(bundle=res.name, expected_streamlines=round(i["expected_bundle_streamlines"], 4),
                          columns=i["n_columns"], backward_steps=i["backward"]["iterations"],
@@ -190,7 +207,8 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
                          seconds=i["seconds"]))
         log.info("%s: %.2f expected streamlines", res.name, i["expected_bundle_streamlines"])
 
-    results = segment_bundles(chain, specs, launches, tol=tol, max_mem=_bytes(max_mem), on_result=write)
+    results = segment_bundles(chain, specs, launches, tol=tol, max_mem=_bytes(max_mem), on_result=write,
+                              keep_fields=flux)
     with open(f"{stem}_desc-mcat_table.tsv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t")
         w.writeheader()

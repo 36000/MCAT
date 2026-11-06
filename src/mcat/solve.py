@@ -242,6 +242,7 @@ class BundleResult:
     endpoints_a: np.ndarray  # (Na,) expected bundle endpoints per absorbing voxel
     info: dict = field(default_factory=dict)
     density_class: np.ndarray = None  # (Nt, 26) the visits split by the walker's direction class
+    fields: object = None    # mcat.fields.BundleFields when solved with keep_fields=True
 
 
 def _endpoint_kinds(a_valid, a_start, a_end):
@@ -302,7 +303,7 @@ def max_columns(chain, launches, max_mem):
     return int(max(1, min(256, free // per_col)))
 
 
-def _solve_group(chain, plans, L, tol, max_iter, on_result):
+def _solve_group(chain, plans, L, tol, max_iter, on_result, keep_fields=False):
     t0 = time.time()
     nb, Ns, nc = chain.nb, chain.n_states, chain.ncomp
     offs = np.cumsum([0] + [p.C for p in plans])
@@ -335,6 +336,7 @@ def _solve_group(chain, plans, L, tol, max_iter, on_result):
                        chain.aindex, nb, p.taboo, p.xcol, pi0_p, a0)
         pi0[:, o0:o1] = pi0_p
         starts.append((a0, seed_prob, pb))
+    launch = pi0.copy() if keep_fields else None   # solve_series consumes pi0
     S, info_f = solve_series(chain.mul_forward, pi0, mask, tol, max_iter, "forward", nc)
     del pi0, mask
     out = {}
@@ -362,6 +364,11 @@ def _solve_group(chain, plans, L, tol, max_iter, on_result):
                     seconds=round(time.time() - p.t0, 1))
         res = BundleResult(p.name, L.seeds, np.clip(seed_prob, 0, None), np.clip(density, 0, None),
                            np.clip(endpoints, 0, None), info, np.clip(dcls, 0, None).astype(np.float32))
+        if keep_fields:
+            from .fields import BundleFields
+
+            res.fields = BundleFields(chain, p, S_p, np.ascontiguousarray(beta[:, o0:o1]),
+                                      np.ascontiguousarray(launch[:, o0:o1]), a0)
         if on_result is not None:
             on_result(res)
         out[p.name] = res
@@ -371,11 +378,20 @@ def _solve_group(chain, plans, L, tol, max_iter, on_result):
 
 
 def segment_bundles(chain, specs, launches, tol=1e-10, max_mem=8e9, max_iter=5000,
-                    valid_classes=VALID_ENDS, on_result=None):
+                    valid_classes=VALID_ENDS, on_result=None, keep_fields=False):
     """Segment bundles, sharing solves.  ``specs``: dicts with ``name`` and optional
     ``include`` (list of masks), ``exclude``, ``start``, ``end`` (boolean volumes on the chain
     grid).  Bundles are packed in order into groups whose columns fit in ``max_mem`` bytes;
-    each group costs one backward and one forward series.  Returns {name: BundleResult}."""
+    each group costs one backward and one forward series.  Returns {name: BundleResult}.
+
+    ``keep_fields``: also keep each bundle's solution columns (occupancy, completion and
+    launch mass per state) as ``result.fields`` (mcat.fields.BundleFields), for edge flux,
+    committors and conservation checks.  Three more float64 arrays of n_states x columns per
+    bundle; the plain chain only (not with spatial moments)."""
+    if keep_fields and chain.ncomp != 1:
+        raise ValueError("keep_fields needs the plain chain (ncomp == 1), not the moment chain")
+    if keep_fields:
+        max_mem = max_mem / 2    # the launch copy during the forward solve
     cap = max_columns(chain, launches, max_mem)
     log.info("column groups of up to %d columns (%.1f GB budget)", cap, max_mem / 1e9)
     out, group, used = {}, [], 0
@@ -385,10 +401,10 @@ def segment_bundles(chain, specs, launches, tol=1e-10, max_mem=8e9, max_iter=500
             log.warning("%s needs %d columns, more than fit in max_mem (%d); solving it alone",
                         p.name, p.C, cap)
         if group and used + p.C > cap:
-            out.update(_solve_group(chain, group, launches, tol, max_iter, on_result))
+            out.update(_solve_group(chain, group, launches, tol, max_iter, on_result, keep_fields))
             group, used = [], 0
         group.append(p)
         used += p.C
     if group:
-        out.update(_solve_group(chain, group, launches, tol, max_iter, on_result))
+        out.update(_solve_group(chain, group, launches, tol, max_iter, on_result, keep_fields))
     return out

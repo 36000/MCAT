@@ -40,6 +40,7 @@ MITTENS v2 (`mittens-dmri`) is not on PyPI yet, so pip builds it from GitHub wit
 | `tol` | `--tol` | 1e-10 | remaining walker mass at which the solves stop |
 | `angle` | `--angle` | 35 | maximum turn per one-voxel hop (degrees). |
 | `double_odf` | `--single-odf` | doubleODF | `--single-odf` gives first-order hops (see [MITTENS](https://github.com/mattcieslak/MITTENS))|
+| `flux` | `--flux` | off | also write each bundle's edge flux and through-flux maps ([docs/fields.md](docs/fields.md)); not with moments |
 | `bundles` | `--bundles` | all in pyAFQ's bundle dictionary | pyAFQ names, e.g. "Left Arcuate"; output files drop the spaces (`bundle-LeftArcuate`) |
 
 Any pyAFQ setting goes on the `ParticipantAFQ`; with the CLI, pass it as `--afq-kwargs`. That covers the fODF model (`tracking_params={"odf_model": ...}`), the PVE, custom bundle dictionaries including subject-space ROIs, and `segmentation_params={"dist_to_atlas": ...}`. `--afq-kwargs` takes JSON, or a Python expression that gives a dict, for settings that are Python objects. The expression sees `afd` (`AFQ.data.fetch`), `abd` (`AFQ.api.bundle_dict`), the `AFQ.definitions` image and mapping classes, `np` and `nib`. For example, an infant run:
@@ -62,6 +63,7 @@ mcat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
 | `..._desc-seedprob_probmap.nii.gz` | probability that the streamline seeded in each interface voxel belongs to the bundle |
 | `..._desc-start_mask`, `_desc-end_mask` | the endpoint ROIs used (pyAFQ's `dist_to_atlas` applied) |
 | `..._desc-core_path.tsv`, `_desc-core.tck` | the bundle's core: the cross-section ridge path, 100 nodes |
+| `..._desc-throughflux_map.nii.gz`, `_desc-edgeflux_map.nii.gz` | with `flux`: expected bundle-streamline steps leaving each voxel, and the same per neighbour (26 volumes) |
 | `..._desc-summary.json` | settings, solve diagnostics, mass check |
 | `<sub>_desc-mcat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
 | `<sub>_desc-mcat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
@@ -92,5 +94,6 @@ With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs
   - One forward solve from every seed's launch, weighted by its partner half's completion, gives the occupancy. Occupancy × completion is the bundle density.
 - **Spatial moments.** States also carry their mean sub-voxel position, with a linear (Prather) closure that is exact per MITTENS path. Without them, every voxel restarts its paths from a uniform position, which makes bundles several times too wide. The closure can amplify around a few loops; those voxels fall back to the uniform closure.
 - **Visitation ODFs.** The bundle density is kept per direction class (state), then spread over the sphere within each class as the chain itself assumes (q ∝ X·Y, the fODF times its cone sum). It is symmetrised and fitted with SH.
+- **Bundle fields.** The occupancy and completion solutions behind the maps can be kept (`segment_bundles(keep_fields=True)`, `mcat.fields`): they give the bundle's edge flux (expected streamline steps along every transition, conserved, counting the streamlines across any cut), committors (where the walks through a voxel end) and an exact endpoint filter. [docs/fields.md](docs/fields.md) explains them and reports a test-retest evaluation.
 - **Cores.** A first most-probable path finds the corridor. Each voxel joins the cross-section of its nearest path voxel. A second shortest path, with cost −log(density / its cross-section's maximum), follows the ridge without a length penalty.
 

@@ -433,3 +433,33 @@ def scatter_init(hseed, lptr, lkey, lval, coef, label, noff, tindex, aindex, nb,
                 if s != 0.0:
                     for c in range(C):
                         a0[aindex[w], c] += coef[h, c] * s
+
+
+# ------------------------------------------------------------------ bundle fields
+@njit(parallel=True, cache=True)
+def stencil_flux(ptr, slot, w, tn, tb, nbr_t, nb, S, beta, colsign, out26):
+    """out26[vox, n] = sum over the voxel's states s, their transitions s -> j into neighbour n,
+    and the columns c, of colsign[c] S[s, c] Q(s, j) beta[j, c]: the expected number of
+    bundle-streamline steps from the voxel into its neighbour n (mcat.fields.edge_flux)."""
+    n_vox = out26.shape[0]
+    C = S.shape[1]
+    for v in prange(n_vox):
+        for n in range(26):
+            out26[v, n] = 0.0
+        for b in range(nb):
+            s = v * nb + b
+            nz = False
+            for c in range(C):
+                if S[s, c] != 0.0:
+                    nz = True
+                    break
+            if not nz:
+                continue
+            for kk in range(ptr[s], ptr[s + 1]):
+                sl = slot[kk]
+                n = tn[b, sl]
+                j = np.int64(nbr_t[v, n]) * nb + tb[b, sl]
+                acc = 0.0
+                for c in range(C):
+                    acc += colsign[c] * S[s, c] * beta[j, c]
+                out26[v, n] += w[kk] * acc
