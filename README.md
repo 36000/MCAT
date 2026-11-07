@@ -1,5 +1,9 @@
 # MCAT: Markov chain absorbing tractography
 
+[![docs](https://github.com/36000/MCAT/actions/workflows/docs.yml/badge.svg)](https://36000.github.io/MCAT/)
+
+**Documentation:** <https://36000.github.io/MCAT/>, including [how the method works](https://36000.github.io/MCAT/algorithm.html), with animations.
+
 MCAT computes white-matter bundles as exact expectations over infinitely many streamlines, with no sampling.
 
 - **The chain.** Probabilistic tracking is treated as an absorbing Markov chain on (white-matter voxel, direction) states. The transitions are the analytic hop geometry of [MITTENS](https://github.com/mattcieslak/MITTENS), with the walker's incoming direction remembered between voxels.

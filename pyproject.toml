@@ -19,6 +19,11 @@ dependencies = [
 [project.optional-dependencies]
 viewer = ["ipyniivue>=2.4"]
 test = ["pytest>=8"]
+docs = [
+    "sphinx>=7.3", "myst-parser>=3", "pydata-sphinx-theme>=0.15", "sphinx-design",
+    "sphinx-copybutton", "sphinxcontrib-bibtex", "sphinxcontrib-programoutput",
+    "matplotlib>=3.8", "imageio-ffmpeg",
+]
 
 [project.scripts]
 mcat = "mcat.cli:main"
