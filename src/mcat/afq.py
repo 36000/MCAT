@@ -197,10 +197,14 @@ def _subject_thalami(afq, sh_img):
 
 
 def _thalami_if_synthseg(afq, sh_img, synthseg_thalamus):
-    """SynthSeg's thalami when pyAFQ's tissue comes from SynthSeg (no ``pve``), else None; logged."""
-    use = synthseg_thalamus and afq.kwargs.get("pve") is None
+    """SynthSeg's thalami when pyAFQ's tissue comes from SynthSeg (``pve`` unset, the default
+    "synthseg", or a built-in method that includes it), else None; logged."""
+    pve = afq.kwargs.get("pve")
+    from_synthseg = pve is None or (isinstance(pve, str) and "synthseg" in pve.lower())
+    use = synthseg_thalamus and from_synthseg
+    why = "--mni-thalamus" if not synthseg_thalamus else f"pve={pve if isinstance(pve, str) else type(pve).__name__}"
     log.info("thalamic start / end ROIs: %s", "SynthSeg's thalami wherever the template's thalamus is used"
-             if use else "the template's (" + ("pve given" if synthseg_thalamus else "--mni-thalamus") + ")")
+             if use else f"the template's ({why})")
     return _subject_thalami(afq, sh_img) if use else None
 
 
@@ -316,7 +320,7 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
                 survival per voxel is written to <stem>_desc-overlength_map.nii.gz
     krylov      finish slowly decaying solves with a BiCGSTAB tail (False: power iteration
                 only, with more bundles per group)
-    synthseg_thalamus  with pyAFQ's SynthSeg tissue (no ``pve`` given), a template start / end
+    synthseg_thalamus  with pyAFQ's SynthSeg tissue (pve unset or "synthseg"), a template start / end
                 ROI that is the thalamus is replaced by SynthSeg's thalamus (see bundle_specs)
     Returns {bundle: BundleResult} (a dict per participant for a GroupAFQ)."""
     import numba
