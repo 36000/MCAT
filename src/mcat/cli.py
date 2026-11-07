@@ -19,8 +19,7 @@ def main(argv=None):
     p.add_argument("--max-length", type=float, default=250.0,
                    help="soft maximum streamline length, mm: states where walkers would mostly outlast "
                         "it (traps) end them, for every bundle (0: off)")
-    p.add_argument("--no-krylov", action="store_true",
-                   help="power iteration only: no BiCGSTAB tail, and more bundles per group")
+    p.add_argument("--no-krylov", action="store_true", help=argparse.SUPPRESS)   # no-op (kept for old scripts)
     p.add_argument("--mni-thalamus", action="store_true",
                    help="keep the template's thalamic start / end ROIs (default: SynthSeg's thalami)")
     p.add_argument("--no-viz", action="store_true",
@@ -62,7 +61,7 @@ def main(argv=None):
     if a.n_proc is None or a.max_mem is None:
         p.error("--n-proc and --max-mem are required (except with --rois-only)")
     run(afq, a.n_proc, a.max_mem, a.bundles, a.moments, a.tol, a.angle, not a.single_odf, viz=not a.no_viz,
-        synthseg_thalamus=not a.mni_thalamus, krylov=not a.no_krylov,
+        synthseg_thalamus=not a.mni_thalamus,
         max_length=a.max_length, viz_rois=a.viz_rois, no_midline=a.no_midline,
         midline_tol=a.midline_tol)
 

@@ -292,7 +292,7 @@ def _bytes(x):
 
 
 def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0, double_odf=True,
-        cores=True, viz=True, synthseg_thalamus=True, krylov=True, max_length=250.0, viz_rois=False,
+        cores=True, viz=True, synthseg_thalamus=True, max_length=250.0, viz_rois=False,
         no_midline=(), midline_tol=10.0):
     """Segment pyAFQ's bundles with MCAT.
 
@@ -318,15 +318,13 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
                 long -- traps where they circle, unable to turn out under the angle limit --
                 become invalid ends for every bundle (mcat.solve.overlength_states); the
                 survival per voxel is written to <stem>_desc-overlength_map.nii.gz
-    krylov      finish slowly decaying solves with a BiCGSTAB tail (False: power iteration
-                only, with more bundles per group)
     synthseg_thalamus  with pyAFQ's SynthSeg tissue (pve unset or "synthseg"), a template start / end
                 ROI that is the thalamus is replaced by SynthSeg's thalamus (see bundle_specs)
     Returns {bundle: BundleResult} (a dict per participant for a GroupAFQ)."""
     import numba
 
     if hasattr(afq, "pAFQ_list"):
-        kw = dict(cores=cores, viz=viz, synthseg_thalamus=synthseg_thalamus, krylov=krylov, max_length=max_length,
+        kw = dict(cores=cores, viz=viz, synthseg_thalamus=synthseg_thalamus, max_length=max_length,
                   viz_rois=viz_rois, no_midline=no_midline, midline_tol=midline_tol)
         return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf, **kw)
                 for s, t, p in zip(afq.valid_sub_list, afq.valid_ses_list, afq.pAFQ_list)}
@@ -394,7 +392,6 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
         rows.append(dict(bundle=res.name, expected_streamlines=round(i["expected_bundle_streamlines"], 4),
                          columns=i["n_columns"], backward_steps=i["backward"]["iterations"],
                          forward_steps=i["forward"]["iterations"],
-                         krylov_products=i["backward"].get("tail_products", 0) + i["forward"].get("tail_products", 0),
                          seconds=i["seconds"]))
         log.info("%s: %.2f expected streamlines", res.name, i["expected_bundle_streamlines"])
 
@@ -410,7 +407,7 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
                     "most of it at (%.0f, %.0f, %.0f) mm", what, ", ".join(names), vol.sum(), f, *peak)
 
     results = segment_bundles(chain, specs(), launches, tol=tol, max_mem=_bytes(max_mem), on_result=write,
-                               krylov=krylov, on_trapped=trapped)
+                               on_trapped=trapped)
     with open(f"{stem}_desc-mcat_table.tsv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t")
         w.writeheader()
