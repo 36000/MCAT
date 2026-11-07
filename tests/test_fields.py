@@ -4,7 +4,13 @@ visits, and endpoint restriction is exact."""
 import numpy as np
 import pytest
 
-from mcat import ChainConfig, Chain, prepare_launches, restrict_endpoints, segment_bundles
+from mcat import (
+    Chain,
+    ChainConfig,
+    prepare_launches,
+    restrict_endpoints,
+    segment_bundles,
+)
 from mcat.geometry import OFFSETS
 
 NX, NY, NZ = 14, 7, 7
@@ -24,8 +30,9 @@ def _sh_rows():
     return fiber, iso
 
 
-@pytest.fixture(scope="module")
-def phantom():
+def _build(kill_x=None):
+    """The phantom chain, its launches and bundle specs.  ``kill_x``: voxel planes whose
+    oblique direction states are past the soft maximum length (chain.kill, as mcat.afq sets it)."""
     fiber, iso = _sh_rows()
     sh = np.zeros((NX, NY, NZ, fiber.size), np.float32)
     transient = np.zeros((NX, NY, NZ), bool)
@@ -46,8 +53,17 @@ def phantom():
     include = np.zeros((NX, NY, NZ), bool)
     include[6] = True
     specs = [dict(name="plain"), dict(name="rois", include=[include], start=start, end=end)]
+    if kill_x is not None:     # the plane's oblique direction states only: axial walkers pass
+        vx = _vox_index(chain)[:, 0]
+        axial = (OFFSETS[:, 1] == 0) & (OFFSETS[:, 2] == 0)
+        chain.kill = np.repeat(np.isin(vx, kill_x), chain.nb) & ~np.tile(axial, vx.size)
     res = segment_bundles(chain, specs, launches, tol=1e-12, keep_fields=True)
     return dict(chain=chain, launches=launches, specs=specs, res=res, start=start, end=end, gm=gm)
+
+
+@pytest.fixture(scope="module")
+def phantom():
+    return _build()
 
 
 def _vox_index(chain):
@@ -127,3 +143,22 @@ def test_keep_fields_needs_plain_chain():
 
     with pytest.raises(ValueError):
         segment_bundles(Moments(), [], None, keep_fields=True)
+
+
+def test_fields_respect_kill_states():
+    # states past the soft maximum length (chain.kill) are invalid ends: walkers reaching them
+    # vanish from the forward solve, and the committor solve must use the same mask
+    ph = _build(kill_x=[9])
+    res = ph["res"]["rois"]
+    F = res.fields
+    x = _vox_index(ph["chain"])[:, 0]
+    n = F.visits()
+    assert n[x == 9].min() > 0
+    assert F.state_visits()[ph["chain"].kill].max() == 0
+    f26 = F.edge_flux()
+    cons = F.conservation(f26)
+    assert abs(cons["in"]) < 1e-9 and abs(cons["out"]) < 1e-9
+    phi = F.endpoint_sides([ph["start"], ph["end"]], tol=1e-12)
+    assert np.allclose(phi.sum(1), n, rtol=1e-8, atol=1e-9 * n.max())
+    # fewer walks complete than without the killed states
+    assert res.info["expected_bundle_streamlines"] < _build()["res"]["rois"].info["expected_bundle_streamlines"]

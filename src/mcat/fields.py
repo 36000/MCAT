@@ -61,7 +61,11 @@ class BundleFields:
         """(Ns, C) uint8: state alive under the column's avoid set."""
         ch, p = self.chain, self.plan
         st = np.repeat(ch.t_lin, ch.nb)
-        return (~p.taboo[st][:, p.xcol]).astype(np.uint8)
+        m = ~p.taboo[st][:, p.xcol]
+        kill = getattr(ch, "kill", None)     # states past the soft maximum length
+        if kill is not None:
+            m[kill] = False
+        return m.astype(np.uint8)
 
     def per_voxel(self, x):
         """Sum a per-state quantity over the voxel's direction classes: (Ns, ...) -> (Nt, ...)."""
