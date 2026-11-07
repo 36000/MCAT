@@ -108,7 +108,7 @@
     <section>
       <h2>Mouse</h2>
       <div class="seg" id="wheel"><button data-m="1" aria-pressed="true">Scroll moves slices</button><button data-m="3">Scroll zooms</button></div>
-      <p class="note"><kbd>Click</kbd> moves the slices · <kbd>Drag</kbd> in 3-D rotates · when scroll zooms, <kbd>right-drag</kbd> pans</p>
+      <p class="note"><kbd>Double-click</kbd> a view to enlarge it, again (or <kbd>Esc</kbd>) for all four · <kbd>Click</kbd> moves the slices · <kbd>Drag</kbd> in 3-D rotates · when scroll zooms, <kbd>right-drag</kbd> pans</p>
       <div class="row"><button class="act" id="reset">Reset zoom</button></div>
     </section>
   </aside>
@@ -129,9 +129,14 @@ __NIIVUE__
   try {
     const nv = new Niivue({
       backColor: [0.039, 0.047, 0.059, 1], multiplanarShowRender: SHOW_RENDER.ALWAYS,
-      multiplanarLayout: 2, multiplanarEqualSize: true, heroImageFraction: 0, meshXRay: 0.5,
+      multiplanarLayout: 2, multiplanarEqualSize: true, heroImageFraction: 0,
       meshThicknessOn2D: D.slab || 4, isColorbar: false, dragMode: 1, crosshairWidth: 1,
       crosshairColor: [1, 0.3, 0.3, 1],
+      // nothing transparent: meshes are not seen through the volume, the 3-D view leaves the
+      // density out (the bundles are opaque surfaces there) and cuts the head open, lit, on
+      // the side facing the camera; tiles use all their space
+      meshXRay: 0, renderOverlayBlend: 0, clipPlaneColor: [0, 0, 0, 0], tileMargin: 0,
+      multiplanarPadPixels: 0, isOrientCube: false,
     });
     await nv.attachTo("gl");
     const bytes = (b64) => { const s = atob(b64), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u.buffer; };
@@ -143,6 +148,8 @@ __NIIVUE__
     for (const m of D.meshes)
       nv.addMesh(await NVMesh.readMesh(bytes(m.data), m.name, nv.gl, m.opacity, new Uint8Array(m.rgba255), true));
     nv.setSliceType(SLICE_TYPE.MULTIPLANAR);
+    await nv.setVolumeRenderIllumination(0.6);
+    nv.setClipPlanes([[0, nv.scene.renderAzimuth + 180, -nv.scene.renderElevation]]);
 
     // ---- glyphs on the three slices through the crosshair, rebuilt as it moves
     const glyphVisible = {}, glyphMesh = {};
@@ -174,7 +181,7 @@ __NIIVUE__
           const o = nv_;
           for (let v = 0; v < G; v++) {
             r[v] /= den;
-            const rr = r[v] * sp.radius, q = 3 * (o + v), p4 = 4 * (o + v);
+            const rr = r[v] * sp.radius * (g.scale || 1), q = 3 * (o + v), p4 = 4 * (o + v);
             pts[q] = cx + rr * W[3 * v]; pts[q + 1] = cy + rr * W[3 * v + 1]; pts[q + 2] = cz + rr * W[3 * v + 2];
             if (g.rgb) { rgba[p4] = g.rgb[0]; rgba[p4 + 1] = g.rgb[1]; rgba[p4 + 2] = g.rgb[2]; }
             else { rgba[p4] = dirRGB[3 * v]; rgba[p4 + 1] = dirRGB[3 * v + 1]; rgba[p4 + 2] = dirRGB[3 * v + 2]; }
@@ -353,6 +360,8 @@ __NIIVUE__
       if (vIdx("density", b.name) >= 0) { densOn[b.name] = true; chip("Density", true, (on) => { densOn[b.name] = on; applyDensity(); refreshIso(); }); }
       if (mIdx("core", b.name) >= 0) chip("Core", true, (on) => showMesh(mIdx("core", b.name), on));
       if (hasGlyphs("glyphs", b.name)) chip("Glyphs", true, (on) => setGlyphs(`${b.name}_glyphs.mz3`, on));
+      if (mIdx("include", b.name) >= 0 || mIdx("exclude", b.name) >= 0)
+        chip("ROIs", true, (on) => { showMesh(mIdx("include", b.name), on); showMesh(mIdx("exclude", b.name), on); });
       el.append(top, chips); list.append(el);
     }
     if (hasGlyphs("glyphs")) {
@@ -361,9 +370,23 @@ __NIIVUE__
       if (hasGlyphs("fodf")) { $("fodf-chip").hidden = false; $("fodf").addEventListener("change", (e) => setGlyphs("fodf_glyphs.mz3", e.target.checked)); }
       $("go").addEventListener("click", goFocus);
     }
-    for (const btn of $("layout").querySelectorAll("button")) btn.addEventListener("click", () => {
-      $("layout").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === btn));
-      nv.setSliceType(Number(btn.dataset.t));
+    const setLayout = (t) => {     // 3 grid, 4 3-D, 0 axial, 1 coronal, 2 sagittal
+      $("layout").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", Number(x.dataset.t) === t));
+      nv.setSliceType(t);
+    };
+    for (const btn of $("layout").querySelectorAll("button")) btn.addEventListener("click", () => setLayout(Number(btn.dataset.t)));
+    // double-click a view to have it fill the canvas; double-click again (or Esc) for the grid
+    const canvas = $("gl");
+    canvas.addEventListener("dblclick", (e) => {
+      if (nv.opts.sliceType !== SLICE_TYPE.MULTIPLANAR) return setLayout(SLICE_TYPE.MULTIPLANAR);
+      const r = canvas.getBoundingClientRect(), dpr = nv.uiData.dpr || window.devicePixelRatio || 1;
+      const x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
+      if (nv.inRenderTile(x, y) >= 0) return setLayout(SLICE_TYPE.RENDER);
+      const i = nv.tileIndex(x, y);
+      if (i >= 0 && nv.screenSlices[i]) setLayout(nv.screenSlices[i].axCorSag);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && nv.opts.sliceType !== SLICE_TYPE.MULTIPLANAR) setLayout(SLICE_TYPE.MULTIPLANAR);
     });
     for (const btn of $("wheel").querySelectorAll("button")) btn.addEventListener("click", () => {
       $("wheel").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === btn));

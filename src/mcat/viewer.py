@@ -53,6 +53,35 @@ def _u8_level(frac, enc_floor):
     return float(1 + 254 * (np.log10(frac) - np.log10(enc_floor)) / -np.log10(enc_floor))
 
 
+def _bbox_mm(mask, affine):
+    """The 8 corners (mm) of a mask's voxel bounding box, or None if it is empty."""
+    ijk = np.argwhere(mask)
+    if not len(ijk):
+        return None
+    lo, hi = ijk.min(0), ijk.max(0)
+    corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    return nib.affines.apply_affine(affine, corners)
+
+
+def _crop_index(shape, affine, box):
+    """(lo, hi) voxel indices of a grid covering the world box (mm); the whole grid if None."""
+    shape = np.array(shape[:3])
+    if box is None:
+        return np.zeros(3, int), shape
+    corners = np.array([[x, y, z] for x in box[:, 0] for y in box[:, 1] for z in box[:, 2]])
+    ijk = nib.affines.apply_affine(np.linalg.inv(affine), corners)
+    lo = np.clip(np.floor(ijk.min(0)), 0, shape - 1).astype(int)
+    hi = np.clip(np.ceil(ijk.max(0)) + 1, lo + 1, shape).astype(int)
+    return lo, hi
+
+
+def _shifted(affine, lo):
+    """The affine of a grid cropped to start at voxel lo."""
+    A = np.array(affine, float)
+    A[:3, 3] = nib.affines.apply_affine(affine, lo)
+    return A
+
+
 def log_density_u8(density, floor=1e-3):
     """density -> uint8: 0 below floor x peak, 1..255 for log10(density / peak) in [log10 floor, 0]."""
     d = np.clip(np.nan_to_num(np.asarray(density, float)), 0, None)
@@ -64,10 +93,11 @@ def log_density_u8(density, floor=1e-3):
     return out
 
 
-def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_opacity=0.55,
+def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_opacity=1.0, crop=True,
           core_radius=1.2, glyphs=False, glyph_planes=None, glyph_floor=1e-2, glyph_range=GLYPH_RANGE,
-          glyph_color=None, isosurface=False,
-          glyph_norm=True, max_glyphs=4000, fodf=None, write_missing_cores=True):
+          glyph_color=None, isosurface=True,
+          glyph_norm=True, max_glyphs=4000, fodf=None, write_missing_cores=True, rois=False,
+          roi_opacity=1.0):
     """What ``view`` and ``save_html`` draw, as data: volumes and meshes (file bytes plus
     display settings, each with its role), glyph sets (voxels and SH coefficients, meshed
     per slice by ``glyph_mesh``), the bundles, the point the slices start at (``focus``, mm)
@@ -77,6 +107,10 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
     t1               background image (default: the run's ``*_desc-mcat_dseg``)
     floor            faintest density shown, as a fraction of each bundle's peak
     show_density     overlay the density maps (False: cores only, on the background)
+    density_opacity  of the density over the background (1: opaque; below ``floor`` the
+                     background shows)
+    crop             crop every volume to the content box (the background's non-empty voxels
+                     and every bundle above ``floor``, plus 2 voxels), so views fill their space
     core_radius      tube radius in mm
     glyphs           visitation-ODF glyphs: True for every bundle shown, or bundle names
     glyph_planes     glyphs follow the slices: every voxel of the three slices through the
@@ -92,11 +126,15 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
                      size proportional to the visits, the bundle's largest filling its voxel).
                      Glyphs read best zoomed in on a slice, with show_density=False.
     max_glyphs       per bundle with glyph_planes="all"; the densest voxels are kept
-    isosurface       also draw each bundle's density as an opaque surface at ``floor`` x its
-                     peak, in its colour (the standalone page redraws it at its slider's level)
+    isosurface       draw each bundle's density as an opaque surface at ``floor`` x its peak, in
+                     its colour; the 3-D view's only picture of the density (the standalone page
+                     redraws it at its slider's level)
     fodf             an SH image on the same grid (e.g. pyAFQ's ``*_model-csd_param-wm_dwimap``):
-                     translucent grey glyphs at the same voxels, for comparison
+                     grey glyphs at the same voxels, a little smaller, for comparison
     write_missing_cores  compute cores that are not on disk yet and save them next to the maps
+    rois             show each bundle's include ROIs (green) and exclude ROIs (red) as surfaces,
+                     from the ``_desc-include_mask`` / ``_desc-exclude_mask`` files mcat.run writes
+    roi_opacity      of those surfaces (1: opaque)
     """
     import json
 
@@ -114,20 +152,45 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
         t1 = cand[0] if cand else None
     S = dict(volumes=[], meshes=[], glyphs=[], bundles=[], focus=None, slab=None, isosurface=bool(isosurface),
              subject=op.basename(next(iter(files.values()))["prefix"]).split("_bundle-")[0])
+    dens = {name: nib.load(f["density"]) for name, f in files.items()}
+    dens = {name: (img, np.asarray(img.dataobj, np.float32)) for name, img in dens.items()}
+    ref, _ = next(iter(dens.values()))
+    back = None
     if t1 is not None:
-        with open(t1, "rb") as fh:
-            dseg = "dseg" in op.basename(str(t1))
-            S["volumes"].append(dict(role="background", name=op.basename(str(t1)), data=fh.read(),
-                                     colormap="gray", opacity=1.0, cal_min=0 if dseg else None,
-                                     cal_max=4 if dseg else None))
+        bimg = nib.load(t1)
+        bdat = np.asarray(bimg.dataobj)
+        back = (bimg, bdat[..., 0] if bdat.ndim == 4 else bdat)
+    # the content box (mm), and each grid's crop to it
+    pts = [_bbox_mm(d >= floor * d.max(), img.affine) for img, d in dens.values() if d.max() > 0]
+    if back is not None:
+        pts.append(_bbox_mm(back[1] > 0, back[0].affine))
+    pts = [p for p in pts if p is not None]
+    box = None
+    if crop and pts:
+        pts = np.concatenate(pts)
+        margin = 2.0 * float(max(ref.header.get_zooms()[:3]))
+        box = np.array([pts.min(0) - margin, pts.max(0) + margin])
+    lo_d, hi_d = _crop_index(ref.shape[:3], ref.affine, box)
+    cut = tuple(slice(a, b) for a, b in zip(lo_d, hi_d))
+    A = _shifted(ref.affine, lo_d)            # the bundles' grid, cropped
+    if back is not None:
+        dseg = "dseg" in op.basename(str(t1))
+        lo_b, hi_b = _crop_index(back[1].shape, back[0].affine, box)
+        bc = back[1][tuple(slice(a, b) for a, b in zip(lo_b, hi_b))]
+        bc_img = nib.Nifti1Image(np.asarray(bc, np.uint8 if dseg else np.float32), _shifted(back[0].affine, lo_b))
+        bc_img.header.set_xyzt_units("mm")
+        S["volumes"].append(dict(role="background", name=op.basename(str(t1)).split(".nii")[0] + ".nii.gz",
+                                 data=gzip.compress(bc_img.to_bytes(), compresslevel=6),
+                                 colormap="gray", opacity=1.0, cal_min=0 if dseg else None,
+                                 cal_max=4 if dseg else None))
     names = list(files) if glyphs is True else ([glyphs] if isinstance(glyphs, str) else list(glyphs or []))
     if glyph_color is None:
         glyph_color = "direction" if len(names) == 1 else "bundle"
     S["glyph_color"] = glyph_color
     every = []
     for i, (name, f) in enumerate(files.items()):
-        img = nib.load(f["density"])
-        d = np.asarray(img.dataobj, np.float32)
+        img, dfull = dens[name]
+        d = dfull[cut]                        # cropped; on the grid A
         cmap, rgb = PALETTE[i % len(PALETTE)]
         meta = dict(name=name, label=name, rgb=list(rgb), colormap=cmap)
         if op.exists(f["prefix"] + "_desc-summary.json"):
@@ -140,28 +203,44 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
             # encoded down to DENSITY_RANGE; cal_min shows it from `floor`, so a viewer can move it
             enc = min(floor, DENSITY_RANGE)
             S["volumes"].append(dict(role="density", bundle=name, name=f"{name}_logdensity.nii.gz",
-                                     data=_nifti_bytes(log_density_u8(d, enc), img.affine), colormap=cmap,
+                                     data=_nifti_bytes(log_density_u8(d, enc), A), colormap=cmap,
                                      cal_min=_u8_level(floor, enc), cal_max=255, floor=floor, enc_floor=enc,
                                      opacity=density_opacity if (S["volumes"] or not show_density) else 1.0))
         if isosurface and d.max() > 0:
             S["meshes"].append(dict(role="surface", bundle=name, name=f"{name}_surface.mz3", rgba255=[*rgb, 255],
-                                    opacity=1.0, data=isosurface_mz3(d / d.max(), floor, img.affine, rgb)))
+                                    opacity=1.0, data=isosurface_mz3(d / d.max(), floor, A, rgb)))
+        if rois:
+            for role, rgb_roi in (("include", ROI_COLORS["include"]), ("exclude", ROI_COLORS["exclude"])):
+                if f.get(role) is None:
+                    continue
+                m = np.asarray(nib.load(f[role]).dataobj)[cut] > 0
+                if m.any():
+                    S["meshes"].append(dict(role=role, bundle=name, name=f"{name}_{role}.mz3",
+                                            rgba255=[*rgb_roi, 255], opacity=roi_opacity,
+                                            data=isosurface_mz3(m.astype(np.float32), 0.5, A, rgb_roi)))
+            if not (f.get("include") or f.get("exclude")):
+                log.warning("%s: no include / exclude masks on disk (written by mcat.run since 2026-11-06)", name)
         # core: written by mcat.run; computed here if missing
         tck, xyz = f["prefix"] + "_desc-core.tck", None
         if op.exists(tck):
             xyz = nib.streamlines.load(tck).streamlines[0]
-        elif f["endpoints"] is not None:
+        elif f["endpoints"] is not None and dfull.max() > 0:
             load = lambda k: (np.asarray(nib.load(f[k]).dataobj) > 0) if f[k] else None  # noqa: E731
-            c = bundle_core(d, img.affine, np.asarray(nib.load(f["endpoints"]).dataobj), load("start"), load("end"))
-            if write_missing_cores:
-                write_core(c, f["prefix"])
-            xyz = c.xyz
+            try:
+                c = bundle_core(dfull, img.affine, np.asarray(nib.load(f["endpoints"]).dataobj), load("start"),
+                                load("end"))
+            except ValueError as e:
+                log.warning("%s: no core (%s)", name, e)
+            else:
+                if write_missing_cores:
+                    write_core(c, f["prefix"])
+                xyz = c.xyz
         if xyz is not None:
             # a triangulated tube: NiiVue's streamline (.tck) renderer draws nothing in some
             # WebGL builds, while surfaces always render
             S["meshes"].append(dict(role="core", bundle=name, name=f"{name}_core.obj",
                                     data=tube_obj(xyz, core_radius), rgba255=[*rgb, 255], opacity=1.0))
-        if name not in names:
+        if name not in names or d.max() <= 0:      # empty bundles: no glyphs
             continue
         if f["odf"] is None:
             log.warning("%s: no visitation ODF on disk (written by mcat.run since 2026-11-04)", name)
@@ -176,30 +255,30 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
         if S["focus"] is None:   # slices start here; meshes in 2-D: a one-voxel slab
             point = (np.asarray(glyph_planes, float) if glyph_planes is not None and not static else
                      xyz[len(xyz) // 2] if xyz is not None else
-                     nib.affines.apply_affine(img.affine, np.unravel_index(np.argmax(d), d.shape)))
+                     nib.affines.apply_affine(A, np.unravel_index(np.argmax(d), d.shape)))
             S["focus"] = [float(x) for x in point]
             S["slab"] = float(min(img.header.get_zooms()[:3]))
-        coef = np.asarray(nib.load(f["odf"]).dataobj, np.float32)[tuple(ijk.T)]
-        S["glyphs"].append(dict(role="glyphs", bundle=name, name=f"{name}_glyphs.mz3", opacity=1.0,
+        coef = np.asarray(nib.load(f["odf"]).dataobj, np.float32)[tuple((ijk + lo_d).T)]
+        S["glyphs"].append(dict(role="glyphs", bundle=name, name=f"{name}_glyphs.mz3", opacity=1.0, scale=1.0,
                                 ijk=ijk.astype(np.int32), coef=coef, norm=glyph_norm, floor=glyph_floor,
                                 rel=(d[tuple(ijk.T)] / d.max()).astype(np.float32),
                                 rgb=None if glyph_color == "direction" else list(rgb)))
         S["glyph_floor"], S["glyph_range"] = glyph_floor, keep
     if fodf is not None and every:
         fimg = nib.load(fodf)
-        if fimg.shape[:3] != d.shape or not np.allclose(fimg.affine, img.affine, atol=1e-3):
-            raise ValueError(f"{fodf} is not on the bundles' grid {d.shape}")
+        if fimg.shape[:3] != ref.shape[:3] or not np.allclose(fimg.affine, ref.affine, atol=1e-3):
+            raise ValueError(f"{fodf} is not on the bundles' grid {ref.shape[:3]}")
         ijk, inv = np.unique(np.concatenate(every), axis=0, return_inverse=True)
         rel = np.zeros(len(ijk), np.float32)     # shown where any bundle's glyph is
         np.maximum.at(rel, inv.ravel(), np.concatenate([g["rel"] for g in S["glyphs"]]))
         ijk = ijk.astype(np.int32)
-        S["glyphs"].append(dict(role="fodf", name="fodf_glyphs.mz3", opacity=0.45, ijk=ijk, norm=True,
+        S["glyphs"].append(dict(role="fodf", name="fodf_glyphs.mz3", opacity=1.0, scale=0.85, ijk=ijk, norm=True,
                                 floor=glyph_floor, rel=rel, rgb=[150, 150, 150],
-                                coef=np.asarray(fimg.dataobj, np.float32)[tuple(ijk.T)]))
+                                coef=np.asarray(fimg.dataobj, np.float32)[tuple((ijk + lo_d).T)]))
     for g in S["glyphs"]:      # largest radius of the set, for glyph_norm=False
         g["vmax"] = float(max(_odf_max(g["coef"]), 1e-30))
     if S["glyphs"]:
-        S["affine"] = np.asarray(img.affine, float).tolist()
+        S["affine"] = np.asarray(A, float).tolist()
         S["shape"] = list(d.shape)
         if static:             # every glyph at once; the slab still shows one slice in 2-D
             S["meshes"] += [dict(role=g["role"], bundle=g.get("bundle"), name=g["name"], opacity=g["opacity"],
@@ -207,15 +286,17 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
                             for g in S.pop("glyphs")]
             S["glyphs"] = []
     if S["focus"] is not None:   # as NiiVue's crosshair: fraction of the RAS-ordered background grid
-        back = nib.as_closest_canonical(nib.load(t1 if t1 is not None else next(iter(files.values()))["density"]))
-        vox = nib.affines.apply_affine(np.linalg.inv(back.affine), S["focus"])
-        S["focus_frac"] = [float(x) for x in np.clip((vox + 0.5) / np.array(back.shape[:3]), 0, 1)]
+        bg = nib.as_closest_canonical(bc_img if back is not None else nib.Nifti1Image(d, A))
+        vox = nib.affines.apply_affine(np.linalg.inv(bg.affine), S["focus"])
+        S["focus_frac"] = [float(x) for x in np.clip((vox + 0.5) / np.array(bg.shape[:3]), 0, 1)]
     return S
 
 
 def view(folder, height=640, **kwargs):
     """ipyniivue ``NiiVue`` widget with the MCAT bundles under ``folder``: the three slices
-    and a 3-D render in an equal 2 x 2 grid.  ``kwargs``: ``scene``'s options (bundles, t1, floor, glyphs, fodf, ...),
+    and a 3-D render in an equal 2 x 2 grid, cropped to the content and opaque throughout
+    (the 3-D view: each bundle as a surface in a lit head cut open towards the camera).
+    Double-click a view to enlarge it to the whole widget; double-click again for the grid.  ``kwargs``: ``scene``'s options (bundles, t1, floor, glyphs, fodf, ...),
     then any ``ipyniivue.NiiVue`` option (e.g. back_color=(1, 1, 1, 1))."""
     import asyncio
     import inspect
@@ -225,12 +306,15 @@ def view(folder, height=640, **kwargs):
     own = set(inspect.signature(scene).parameters) - {"folder"}
     S = scene(folder, **{k: v for k, v in kwargs.items() if k in own})
     nv_options = {k: v for k, v in kwargs.items() if k not in own}
-    # the three slices and the 3-D render as an equal 2 x 2 grid; meshes show through the
-    # volume render (x-ray) so cores and glyphs are visible inside the bundles
+    # the three slices and the 3-D render as an equal 2 x 2 grid, using all their space.
+    # Nothing transparent: meshes are not seen through the volume (x-ray 0), and the 3-D view
+    # leaves the density out (the bundles are opaque surfaces there) and cuts the head open,
+    # lit, on the side facing the camera
     opts = dict(back_color=(0, 0, 0, 1), slice_type=SliceType.MULTIPLANAR,
                 multiplanar_show_render=ShowRender.ALWAYS, multiplanar_layout=MultiplanarType.GRID,
-                multiplanar_equal_size=True, hero_image_fraction=0.0, is_colorbar=False, mesh_xray=0.5,
-                mesh_thickness_on_2d=S["slab"] or 4.0)
+                multiplanar_equal_size=True, hero_image_fraction=0.0, is_colorbar=False, mesh_xray=0.0,
+                render_overlay_blend=0.0, clip_plane_color=(0.0, 0.0, 0.0, 0.0), tile_margin=0.0,
+                multiplanar_pad_pixels=0, is_orient_cube=False, mesh_thickness_on_2d=S["slab"] or 4.0)
     opts.update(nv_options)
     nv = NiiVue(height=height, **opts)
     nv.load_volumes([Volume(data=v["data"], name=v["name"], colormap=v["colormap"], opacity=v["opacity"],
@@ -267,12 +351,46 @@ def view(folder, height=640, **kwargs):
         nv.on_location_change(moved)
     elif fixed:
         nv.load_meshes(fixed)
+
+    # double-click a view to have it fill the widget; double-click again for the grid.
+    # ipyniivue reports mouse-ups and crosshair moves only: two quick mouse-ups in one place
+    # are a double-click; a crosshair move just before says which slice, none means 3-D
+    import time
+
+    click = {"t": 0.0, "pos": None, "view": None, "moved": 0.0}
+    views = {0: SliceType.AXIAL, 1: SliceType.CORONAL, 2: SliceType.SAGITTAL}
+
+    def located(d):
+        click["moved"], click["view"] = time.monotonic(), d.get("ax_cor_sag")
+
+    def released(d):
+        if d.get("is_dragging"):
+            return
+        now, pos = time.monotonic(), tuple(d.get("mouse_pos") or (0, 0))
+        double = now - click["t"] < 0.45 and click["pos"] is not None and max(
+            abs(a - b) for a, b in zip(pos, click["pos"])) < 8
+        click["t"], click["pos"] = now, pos
+        if not double:
+            return
+        click["t"] = 0.0
+        if nv.opts.slice_type != SliceType.MULTIPLANAR:
+            nv.set_slice_type(SliceType.MULTIPLANAR)
+        elif now - click["moved"] < 0.6 and click["view"] in views:
+            nv.set_slice_type(views[click["view"]])
+        else:
+            nv.set_slice_type(SliceType.RENDER)
+
+    nv.on_location_change(located)
+    nv.on_mouse_up(released)
     if S["focus"] is not None:
         nv.scene.crosshair_pos = S["focus_frac"]
+    nv.set_clip_planes([[0.0, nv.scene.render_azimuth + 180, -nv.scene.render_elevation]])
+    nv.on_canvas_attached(lambda *_: nv.set_volume_render_illumination(0.6))   # lit, solid-looking head
     nv.bundle_names = [b["name"] for b in S["bundles"]]   # overlay order after the background
     return nv
 
 
+ROI_COLORS = {"include": (70, 200, 110), "exclude": (225, 60, 60)}
 NIIVUE_CDN = "https://cdn.jsdelivr.net/npm/@niivue/niivue@0.65.0/dist/niivue.umd.js"
 
 
@@ -340,7 +458,8 @@ def glyph_mesh(g, affine, c=None, floor=None):
     on &= g["rel"] >= (g["floor"] if floor is None else floor)
     if not on.any():
         return None
-    return glyph_mz3(g["coef"][on], g["ijk"][on], affine, rgb=g["rgb"], norm=g["norm"], vmax=g["vmax"])
+    return glyph_mz3(g["coef"][on], g["ijk"][on], affine, rgb=g["rgb"], norm=g["norm"], vmax=g["vmax"],
+                     scale=g.get("scale", 1.0))
 
 
 def glyph_mz3(coef, ijk, affine, rgb=None, norm=True, scale=1.0, sphere="symmetric362", vmax=None):

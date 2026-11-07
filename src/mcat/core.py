@@ -7,7 +7,9 @@ Method (parameter-free apart from where the ends are; two shortest-path searches
 
 1. Anchors.  Each end of the bundle is anchored at the white-matter voxel nearest the
    centroid of the walkers' endpoints at that end, weighted by the endpoint density
-   (``endpoints_map``).  Which endpoints belong to which end: the bundle's start/end ROIs
+   (``endpoints_map``) -- or, with ``anchor="mode"``, nearest the endpoint density's peak
+   (smoothed over a voxel), where most walkers end, which a broad or curved ending ROI (an
+   eye, a gyrus) pulls the centroid away from.  Which endpoints belong to which end: the bundle's start/end ROIs
    when it has both; its one endpoint ROI vs every other endpoint when it has one; the
    two hemispheres for a callosal bundle; otherwise two clusters of the endpoints.
 2. A first most-probable path: Dijkstra on the 26-neighbour voxel graph with cost
@@ -94,13 +96,22 @@ def _path(G, src, dst):
     return np.array(p[::-1])
 
 
-def _anchor(ep, roi, body):
-    """Body voxel nearest the endpoint-weighted centroid of the endpoints in ``roi``."""
+def _anchor(ep, roi, body, how="centroid"):
+    """Body voxel nearest the endpoint-weighted centroid (``how="centroid"``) or the smoothed
+    endpoint-density peak (``"mode"``) of the endpoints in ``roi``."""
     w = np.where(roi, ep, 0.0)
     if w.sum() <= 0:
         w = roi.astype(float)
-    ijk = np.argwhere(w > 0)
-    c = (ijk * w[tuple(ijk.T)][:, None]).sum(0) / w[tuple(ijk.T)].sum()
+    if how == "mode":
+        from scipy.ndimage import gaussian_filter
+
+        sm = np.where(roi, gaussian_filter(w, 1.0), -np.inf)
+        c = np.array(np.unravel_index(np.argmax(sm), sm.shape), float)
+    elif how == "centroid":
+        ijk = np.argwhere(w > 0)
+        c = (ijk * w[tuple(ijk.T)][:, None]).sum(0) / w[tuple(ijk.T)].sum()
+    else:
+        raise ValueError(f"anchor must be 'centroid' or 'mode', not {how!r}")
     cand = np.argwhere(body)
     return cand[np.argmin(((cand - c) ** 2).sum(1))]
 
@@ -114,6 +125,8 @@ def split_ends(ep, affine, start=None, end=None):
         if roi is not None and (has & roi).any() and (has & ~roi).any():
             return has & roi, has & ~roi, f"{name} ROI vs all other endpoints"
     ijk = np.argwhere(has)
+    if len(ijk) < 2:
+        raise ValueError(f"{len(ijk)} endpoint voxel(s): no two ends to split")
     w = ep[tuple(ijk.T)]
     xyz = nib.affines.apply_affine(affine, ijk)
     left = xyz[:, 0] < 0
@@ -136,13 +149,14 @@ def split_ends(ep, affine, start=None, end=None):
 
 
 def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, floor=1e-6,
-                body=1e-2, smooth=1.5):
+                body=1e-2, smooth=1.5, anchor="centroid"):
     """Cross-section ridge path of one bundle (see module docstring).
 
     density, endpoints  3-D arrays on the same grid (MCAT ``density_map``, ``endpoints_map``)
     start, end          optional boolean endpoint ROIs (MCAT ``start_mask``, ``end_mask``)
     floor               voxels with density below floor x peak are left out of the graph
     body                anchors are placed on voxels with density >= body x peak
+    anchor              "centroid" (default) or "mode": where in each end's endpoints to anchor
     """
     from scipy.ndimage import gaussian_filter1d, label, map_coordinates
     from scipy.sparse.csgraph import dijkstra
@@ -159,7 +173,7 @@ def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, f
     core_lab = lab[np.unravel_index(np.argmax(dn), dn.shape)]
     keep = lab == core_lab                          # the component holding the peak
     bod = keep & (dn >= body)
-    s_vox, e_vox = _anchor(ep, S_roi, bod), _anchor(ep, E_roi, bod)
+    s_vox, e_vox = _anchor(ep, S_roi, bod, anchor), _anchor(ep, E_roi, bod, anchor)
 
     cost1 = np.where(keep, -np.log(np.where(keep, dn, 1.0)), 0.0)
     G, idx, lin = _graph(cost1, keep, vox_mm)
@@ -189,7 +203,7 @@ def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, f
     dens = map_coordinates(dn, ijk.T, order=1, mode="nearest")
     length = float(np.linalg.norm(np.diff(xyz, axis=0), axis=1).sum())
     L0 = float(np.linalg.norm(np.diff(first, axis=0), axis=1).sum())
-    info = dict(n_graph_voxels=int(len(idx)), first_path_length_mm=round(L0, 1),
+    info = dict(anchor=anchor, n_graph_voxels=int(len(idx)), first_path_length_mm=round(L0, 1),
                 start_anchor_vox=s_vox.tolist(), end_anchor_vox=e_vox.tolist(),
                 min_node_density=float(dens.min()), median_node_density=float(np.median(dens)))
     return Core(xyz, dens, length, how, info, first)
@@ -213,7 +227,7 @@ def write_core(core, prefix, extra=None):
 
 
 def bundle_files(folder):
-    """{bundle: {prefix, density, endpoints, start, end, odf}} for the MCAT outputs under
+    """{bundle: {prefix, density, endpoints, start, end, include, exclude, odf}} for the MCAT outputs under
     ``folder`` (None where a file is missing)."""
     out = {}
     for f in sorted(glob.glob(op.join(folder, "**", "*_desc-density_map.nii.gz"), recursive=True)):
@@ -223,11 +237,12 @@ def bundle_files(folder):
         pre = f[: -len("_desc-density_map.nii.gz")]
         get = lambda k: (pre + f"_desc-{k}.nii.gz") if op.exists(pre + f"_desc-{k}.nii.gz") else None  # noqa: E731
         out[m.group(1)] = dict(prefix=pre, density=f, endpoints=get("endpoints_map"),
-                               start=get("start_mask"), end=get("end_mask"), odf=get("visitodf_dwimap"))
+                               start=get("start_mask"), end=get("end_mask"), include=get("include_mask"),
+                               exclude=get("exclude_mask"), odf=get("visitodf_dwimap"))
     return out
 
 
-def write_cores(folder, n_nodes=100):
+def write_cores(folder, n_nodes=100, anchor="centroid"):
     """Compute and save the core of every bundle under ``folder`` (MCAT outputs)."""
     for name, f in bundle_files(folder).items():
         if f["endpoints"] is None:
@@ -236,7 +251,7 @@ def write_cores(folder, n_nodes=100):
         load = lambda k: (np.asarray(nib.load(f[k]).dataobj) > 0) if f[k] else None  # noqa: E731
         try:
             c = bundle_core(np.asarray(img.dataobj), img.affine, np.asarray(nib.load(f["endpoints"]).dataobj),
-                            load("start"), load("end"), n_nodes)
+                            load("start"), load("end"), n_nodes, anchor=anchor)
         except ValueError as e:
             log.warning("%s: no core (%s)", name, e)
             continue

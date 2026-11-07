@@ -70,7 +70,7 @@ mcat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
 | `<sub>_desc-mcat_view.html` | viewer page with every bundle: densities and cores (`viz`) |
 | `..._bundle-<Name>_desc-view.html` | viewer page for one bundle, with its visitation-ODF glyphs and the fODF (`viz`) |
 
-`mcat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget. It shows the three slices and a 3-D render as an equal 2 × 2 grid, each bundle's density on a log scale from 1e-3 of its peak, and its core as a tube.
+`mcat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget. It shows the three slices and a 3-D render as an equal 2 × 2 grid, each bundle's density on a log scale from 1e-3 of its peak, and its core as a tube. Every volume is cropped to the head and the bundles, so the views fill their space, and nothing is transparent: the density is opaque over the background, and the 3-D view shows each bundle as an opaque surface (`isosurface`, on by default) inside a lit head cut open towards the camera. Double-click a view to enlarge it to the whole widget, and double-click again for all four (on the web page, Esc works too).
 
 With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs as glyphs, like fODF glyphs. Where the fODF has a crossing, the glyph shows only the lobe the bundle uses. Glyphs follow the slices: every voxel at or above `glyph_floor` (1e-2 of the peak) gets one, drawn on the three slices through the crosshair, and redrawn as you click or scroll. The slices start at the core's midpoint. Options:
 
@@ -79,7 +79,7 @@ With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs
 - `glyph_norm=False` sizes glyphs by visits instead of normalising each one.
 - `glyph_color` is `"direction"` or `"bundle"`.
 
-`mcat.viewer.save_html("bundles.html", folder, glyphs=True, ...)` writes the same scene as a standalone web page to open in any browser or share. It has controls for the layout, each bundle's density, core and glyphs, the opacities, and whether scrolling moves slices or zooms. Two log-scale sliders set the faintest density shown (down to 1e-6 of each bundle's peak) and the faintest voxel that gets a glyph (down to 1e-3). A checkbox draws each bundle as an opaque surface at the density slider's level, redrawn as the slider moves. In the notebook widget, `isosurface=True` draws that surface at `floor`. The data are embedded and the page meshes the glyphs itself. NiiVue loads from a CDN; pass `niivue_js=` a local `niivue.umd.js` (npm `@niivue/niivue`, `dist/`) to embed it and work offline.
+`mcat.viewer.save_html("bundles.html", folder, glyphs=True, ...)` writes the same scene as a standalone web page to open in any browser or share. It has controls for the layout, each bundle's density, core and glyphs, the opacities, and whether scrolling moves slices or zooms. Two log-scale sliders set the faintest density shown (down to 1e-6 of each bundle's peak) and the faintest voxel that gets a glyph (down to 1e-3). A checkbox (on by default) draws each bundle as an opaque surface at the density slider's level, redrawn as the slider moves; the notebook widget draws it at `floor`. The data are embedded and the page meshes the glyphs itself. NiiVue loads from a CDN; pass `niivue_js=` a local `niivue.umd.js` (npm `@niivue/niivue`, `dist/`) to embed it and work offline.
 
 ## Method
 

@@ -32,9 +32,11 @@ log = logging.getLogger("mcat")
 STALL_WINDOW, STALL_RATIO = 200, 0.9   # stalled: remaining mass fell < 10% in 200 steps
 TAIL_MIN_STEPS = 30        # power steps before the Krylov tail may take over (walkers in transit)
 TAIL_SWITCH_AFTER = 500    # ... when power iteration would still need more steps than this
-TAIL_TOL_FACTOR = 0.01     # Krylov residual target, relative to the power tolerance
-TAIL_MAX_PRODUCTS = 3000
+TAIL_MAX_PRODUCTS = 3000   # for the whole Krylov tail, all rounds together
+TAIL_ROUNDS = 4            # Krylov rounds on what the previous one left, before power iteration
 FLOAT_BLOCKS_PER_COLUMN = 12   # float64 arrays per solution column at the peak (with the tail)
+FLOAT_BLOCKS_POWER = 6         # ... with power iteration only (krylov=False)
+OVERLENGTH_SURVIVAL = 0.5      # states where more walkers than this outlast the soft max length
 
 
 # ------------------------------------------------------------------ Krylov tail
@@ -89,6 +91,19 @@ def bicgstab(apply, b, tol_abs, rows, max_mv=TAIL_MAX_PRODUCTS, restart=50):
     return x, mv, res
 
 
+def _bicgstab_cols(apply, b, tol_abs, rows, cols, ncols, max_mv=TAIL_MAX_PRODUCTS):
+    """bicgstab on columns ``cols`` of an operator ``apply`` that works on all ``ncols``
+    columns (the others zero; the operator acts column by column)."""
+    def sub(X, out):
+        full = np.zeros((X.shape[0], ncols))
+        full[:, cols] = X
+        res = np.empty_like(full)
+        apply(full, res)
+        out[...] = res[:, cols]
+
+    return bicgstab(sub, b, tol_abs, rows, max_mv=max_mv)
+
+
 def _crawling(hist, it, tol, window=10):
     """The remaining mass decays geometrically and power iteration would still need more
     than TAIL_SWITCH_AFTER steps to reach ``tol``."""
@@ -99,21 +114,26 @@ def _crawling(hist, it, tol, window=10):
     return 0 < q1 < 1 and abs(q1 - q0) < 0.02 and np.log(tol / hist[-1]) / np.log(q1) > TAIL_SWITCH_AFTER
 
 
-def solve_series(mul, x0, mask, tol, max_iter, what, ncomp=1):
+def solve_series(mul, x0, mask, tol, max_iter, what, ncomp=1, krylov=True):
     """total = sum_t (M A)^t x0 per column (M = diag(mask)), A x = mul(x, out).
 
     Power iteration until the remaining mass (mass rows, relative to the largest column's
     start) is below ``tol``.  If it crawls (decays slower than needed to finish within 500
-    more steps) or stalls, the rest of the series is one linear solve, (I - M A) y = term,
-    done with BiCGSTAB; columns it cannot solve (an exactly closed loop) continue with power
-    iteration and stop at the stall check.  ``x0`` is consumed.  Returns (total, info)."""
+    more steps) or stalls, the rest of the series is a linear solve, (I - M A) y = term, done
+    with BiCGSTAB to the same ``tol``.  What a solve leaves out is exactly the series of its
+    true residual r = term - (I - M A) y, so the remaining mass is then |r|, measured as power
+    iteration measures it: below ``tol`` the column is done; otherwise BiCGSTAB solves for r
+    in turn (up to TAIL_ROUNDS rounds), and what is still left continues with power iteration.
+    Columns BiCGSTAB cannot solve (an exactly closed loop) continue with power iteration and
+    stop at the stall check.  ``krylov=False``: power iteration only.  ``x0`` is consumed.
+    Returns (total, info)."""
     total = x0.copy()
     term, nxt = x0, np.empty_like(x0)
     mask = np.ascontiguousarray(mask)
     rows = slice(None, None, ncomp)
     scale = max(np.abs(x0[rows]).sum(0).max(), 1e-300)
     info = dict(iterations=0, residual=0.0, stalled=False)
-    hist, ref, tried = [], None, False
+    hist, ref, tried = [], None, not krylov
     for it in range(1, max_iter + 1):
         mul(term, nxt)
         res = float(K.mask_accumulate(nxt, mask, total, ncomp).max()) / scale
@@ -132,9 +152,8 @@ def solve_series(mul, x0, mask, tol, max_iter, what, ncomp=1):
             ref = res
         if not tried and (stall or _crawling(hist, it, tol)):
             tried = True
-            r0 = np.abs(term[rows]).sum(0)
-            tol_abs = tol * scale * TAIL_TOL_FACTOR
-            act = np.flatnonzero(r0 > tol_abs)
+            tol_abs = tol * scale
+            act = np.flatnonzero(np.abs(term[rows]).sum(0) > tol_abs)
             tmp = np.empty((term.shape[0], act.size))
             msk = np.ascontiguousarray(mask[:, act])
 
@@ -143,31 +162,94 @@ def solve_series(mul, x0, mask, tol, max_iter, what, ncomp=1):
                 tmp[...] *= msk
                 np.subtract(X, tmp, out=out)
 
+            log.info("  %s: switching to the Krylov tail at step %d (remaining mass %.1e, %s; %d columns)",
+                     what, it, res, "stalled" if stall else "decaying too slowly for power iteration", act.size)
             t0 = time.time()
-            b = np.ascontiguousarray(term[:, act])
-            y, mv, r1 = bicgstab(apply, b, tol_abs, rows)
-            del tmp
-            ok = np.isfinite(r1) & (r1 <= np.maximum(tol_abs, 0.1 * r0[act]))
-            total[:, act[ok]] += y[:, ok] - b[:, ok]
-            term[:, act[ok]] = 0.0
-            r0[act[ok]] = r1[ok]
-            res = float(r0.max()) / scale
-            info.update(tail_started_at=it, tail_products=int(mv), residual=res,
+            pending = np.ascontiguousarray(term[:, act])   # already in total
+            added = np.ones(act.size, bool)                # is ``pending`` in total yet?
+            live = np.ones(act.size, bool)                 # still worked on by Krylov
+            mv_all, rounds = 0, 0
+            resid = np.empty_like(pending)
+            for rounds in range(1, TAIL_ROUNDS + 1):
+                cols = np.flatnonzero(live)
+                budget = TAIL_MAX_PRODUCTS - mv_all
+                if not cols.size or budget < 2:
+                    break
+                every = cols.size == act.size
+                b = pending if every else np.ascontiguousarray(pending[:, cols])
+                r0 = np.abs(b[rows]).sum(0)
+                y, mv, _ = bicgstab(apply, b, tol_abs, rows, max_mv=budget) if every else \
+                    _bicgstab_cols(apply, b, tol_abs, rows, cols, act.size, max_mv=budget)
+                mv_all += mv
+                # the true residual (the recurrence's can drift): exactly what the solve leaves out
+                if every:
+                    apply(y, resid)
+                    np.subtract(b, resid, out=resid)
+                    r = resid
+                else:
+                    full = np.zeros_like(pending)
+                    full[:, cols] = y
+                    apply(full, resid)
+                    del full
+                    r = b - resid[:, cols]
+                r1 = np.abs(r[rows]).sum(0)
+                ok = np.isfinite(r1) & (r1 < 0.5 * r0)     # made real progress: keep it
+                acc = cols[ok]
+                # y counts b itself once: b is in total already unless it is a residual
+                total[:, act[acc]] += y[:, ok] - np.where(added[acc], 1.0, 0.0) * b[:, ok]
+                del y
+                pending[:, acc] = r[:, ok]
+                added[acc] = False
+                live[cols[~ok]] = False                      # Krylov cannot help: power iteration
+                live[acc[r1[ok] <= tol_abs]] = False         # done
+                del r
+            del tmp, resid
+            # what is left (the true residuals) goes back into the power series
+            add = ~added
+            total[:, act[add]] += pending[:, add]
+            term[:, act] = pending
+            left = np.abs(term[rows]).sum(0)
+            res = float(left.max()) / scale
+            info.update(tail_started_at=it, tail_products=int(mv_all), tail_rounds=rounds, residual=res,
                         tail_seconds=round(time.time() - t0, 1))
-            log.info("  %s: Krylov tail from step %d, %d products, remaining %.1e (%.0fs)", what, it,
-                     mv, res, time.time() - t0)
-            if not ok.all():
-                log.warning("%s: the Krylov tail did not converge for %d of %d columns; they "
-                            "continue with power iteration", what, int((~ok).sum()), act.size)
+            log.info("  %s: Krylov tail from step %d, %d products in %d round(s), remaining %.1e (%.0fs)",
+                     what, it, mv_all, rounds, res, time.time() - t0)
             if res < tol:
                 break
-            stall = stall and not ok.any()
+            n_left = int((left[act] > tol_abs).sum())
+            log.info("  %s: %d of %d columns above tol after the Krylov tail continue with power "
+                     "iteration", what, n_left, act.size)
+            stall = False
         if stall:
             info["stalled"] = True
+            info["trapped"] = np.abs(term[rows]).sum(1).astype(np.float32) / scale
             log.warning("%s solve stalled at step %d: remaining mass %.2e circulates in states "
                         "that (almost) never get absorbed; stopping here", what, it, res)
             break
+    if info["residual"] >= tol and "trapped" not in info:
+        info["trapped"] = np.abs(term[rows]).sum(1).astype(np.float32) / scale   # max_iter reached
     return total, info
+
+
+# ------------------------------------------------------------------ soft maximum length
+def overlength_states(chain, max_length_mm, zooms):
+    """Direction states from which most walkers are still walking after ``max_length_mm``:
+    the survival probability u_T = Q^T 1 (Q: one step among white-matter states) after
+    T = max_length / smallest voxel side steps -- every step crosses into a neighbouring voxel,
+    so a walk of T steps is at least that long.  Traps (white matter the turning limit makes
+    hard to leave, e.g. a ring around a cavity) keep u_T near 1, ordinary states drain
+    within a tract's length.  Bundle ROIs only add ways out, so this holds for every bundle.
+    Returns (kill: bool per state, survival per state, T)."""
+    T = int(np.ceil(max_length_mm / float(np.min(np.abs(zooms)))))
+    nc = chain.ncomp
+    u = np.zeros((chain.n_states * nc, 1))
+    u[::nc] = 1.0                                        # the mass rows (moments: position-averaged)
+    out = np.empty_like(u)
+    for _ in range(T):
+        chain.mul_backward(u, out)
+        u, out = out, u
+    surv = u[::nc, 0].copy()
+    return surv >= OVERLENGTH_SURVIVAL, surv, T
 
 
 # ------------------------------------------------------------------ launches
@@ -293,16 +375,29 @@ class _Plan:
                               for c in range(self.C)], 1).astype(np.float64)
         st = np.repeat(chain.t_lin, chain.nb * chain.ncomp)
         self.mask = (~self.taboo[st][:, self.xcol]).astype(np.uint8)
+        kill = getattr(chain, "kill", None)      # states past the soft maximum length: walkers end there
+        if kill is not None:
+            self.mask[np.repeat(kill, chain.ncomp)] = 0
 
 
-def max_columns(chain, launches, max_mem):
+def max_columns(chain, launches, max_mem, krylov=True):
     """Solution columns that fit in ``max_mem`` bytes next to the chain and the launches."""
-    per_col = chain.n_states * chain.ncomp * (8 * FLOAT_BLOCKS_PER_COLUMN + 1)
+    blocks = FLOAT_BLOCKS_PER_COLUMN if krylov else FLOAT_BLOCKS_POWER
+    per_col = chain.n_states * chain.ncomp * (8 * blocks + 1)
     free = max_mem - chain.nbytes - launches.nbytes - 1e9
     return int(max(1, min(256, free // per_col)))
 
 
-def _solve_group(chain, plans, L, tol, max_iter, on_result):
+def _trapped(chain, info, what, names, on_trapped):
+    """Hand the mass a solve could not finish (per voxel) to ``on_trapped``."""
+    m = info.pop("trapped", None)
+    if m is None or on_trapped is None:
+        return
+    vol = chain.to_volume(m.reshape(-1, chain.nb).sum(1))
+    on_trapped(what, names, vol)
+
+
+def _solve_group(chain, plans, L, tol, max_iter, on_result, krylov=True, on_trapped=None):
     t0 = time.time()
     nb, Ns, nc = chain.nb, chain.n_states, chain.ncomp
     offs = np.cumsum([0] + [p.C for p in plans])
@@ -314,7 +409,8 @@ def _solve_group(chain, plans, L, tol, max_iter, on_result):
         p.mask = None
     r = np.concatenate([chain.absorb_rhs(p.absw) for p in plans], axis=1)
     r *= mask
-    beta, info_b = solve_series(chain.mul_backward, r, mask, tol, max_iter, "backward", nc)
+    beta, info_b = solve_series(chain.mul_backward, r, mask, tol, max_iter, "backward", nc, krylov)
+    _trapped(chain, info_b, "backward", names, on_trapped)
     del r
     P = L.pair_seed.size
     pi0 = np.zeros((Ns * nc, int(offs[-1])))
@@ -335,7 +431,10 @@ def _solve_group(chain, plans, L, tol, max_iter, on_result):
                        chain.aindex, nb, p.taboo, p.xcol, pi0_p, a0)
         pi0[:, o0:o1] = pi0_p
         starts.append((a0, seed_prob, pb))
-    S, info_f = solve_series(chain.mul_forward, pi0, mask, tol, max_iter, "forward", nc)
+    if getattr(chain, "kill", None) is not None:
+        pi0[np.repeat(chain.kill, nc)] = 0.0
+    S, info_f = solve_series(chain.mul_forward, pi0, mask, tol, max_iter, "forward", nc, krylov)
+    _trapped(chain, info_f, "forward", names, on_trapped)
     del pi0, mask
     out = {}
     ti = chain.tindex[L.seed_lin]
@@ -371,13 +470,18 @@ def _solve_group(chain, plans, L, tol, max_iter, on_result):
 
 
 def segment_bundles(chain, specs, launches, tol=1e-10, max_mem=8e9, max_iter=5000,
-                    valid_classes=VALID_ENDS, on_result=None):
+                    valid_classes=VALID_ENDS, on_result=None, krylov=True, on_trapped=None):
     """Segment bundles, sharing solves.  ``specs``: dicts with ``name`` and optional
     ``include`` (list of masks), ``exclude``, ``start``, ``end`` (boolean volumes on the chain
     grid).  Bundles are packed in order into groups whose columns fit in ``max_mem`` bytes;
-    each group costs one backward and one forward series.  Returns {name: BundleResult}."""
-    cap = max_columns(chain, launches, max_mem)
-    log.info("column groups of up to %d columns (%.1f GB budget)", cap, max_mem / 1e9)
+    each group costs one backward and one forward series.  ``krylov=False``: power iteration
+    only (no BiCGSTAB tail, and no memory kept for it, so more columns per group).
+    ``on_trapped(direction, names, volume)``: called when a solve stalls or runs out of steps,
+    with the mass it could not finish per voxel (relative to the largest column's start).
+    Returns {name: BundleResult}."""
+    cap = max_columns(chain, launches, max_mem, krylov)
+    log.info("column groups of up to %d columns (%.1f GB budget%s)", cap, max_mem / 1e9,
+             "" if krylov else ", power iteration only")
     out, group, used = {}, [], 0
     for spec in specs:
         p = _Plan(chain, spec, valid_classes)
@@ -385,10 +489,10 @@ def segment_bundles(chain, specs, launches, tol=1e-10, max_mem=8e9, max_iter=500
             log.warning("%s needs %d columns, more than fit in max_mem (%d); solving it alone",
                         p.name, p.C, cap)
         if group and used + p.C > cap:
-            out.update(_solve_group(chain, group, launches, tol, max_iter, on_result))
+            out.update(_solve_group(chain, group, launches, tol, max_iter, on_result, krylov, on_trapped))
             group, used = [], 0
         group.append(p)
         used += p.C
     if group:
-        out.update(_solve_group(chain, group, launches, tol, max_iter, on_result))
+        out.update(_solve_group(chain, group, launches, tol, max_iter, on_result, krylov, on_trapped))
     return out
