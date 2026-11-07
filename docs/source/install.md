@@ -23,8 +23,18 @@ The other dependencies are numpy, scipy, nibabel, numba, DIPY, scikit-image and 
 
 ```bash
 pip install -e ".[docs,test]"
-sphinx-build -b html docs docs/_build/html
+make -C docs html            # = sphinx-build -b html docs/source docs/build/html
 ```
+
+The `docs/` folder keeps sources and outputs apart:
+
+| folder | |
+|---|---|
+| `docs/source/` | the pages (MyST Markdown), `conf.py` and the bibliography |
+| `docs/static/` | hand-written assets (CSS) |
+| `docs/animations/` | the scripts that render the figures and animations, and the phantom they share |
+| `docs/_ext/` | the Sphinx extension that runs those scripts and embeds their output |
+| `docs/build/` | everything generated: `html/`, the rendered media (`generated/`) and the phantom's cached chains (`cache/`). Delete it to start over (`make -C docs clean`) |
 
 The figures and animations on {doc}`algorithm` are rendered at build time by the scripts in
 `docs/animations/`, which run MCAT on a small phantom. That takes a few minutes the first time.

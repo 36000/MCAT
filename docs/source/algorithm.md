@@ -63,7 +63,7 @@ where $b$ is the walker's *direction class*: the nearest of the 26 directions to
 voxel's neighbours. This memory is what lets a walker cross a fibre crossing instead of
 turning at random. A volume with $n$ white-matter voxels has $26n$ states.
 
-```{figure} /_generated/fig_tissue_states.png
+```{generated-figure} tissue_states
 :name: fig-phantom
 :alt: The phantom's tissue map and the 26 direction classes
 
@@ -178,7 +178,7 @@ apart). A streamline along peak $p$ is two **half-walks**: one launched along $+
 along $-p$. Each half's first exit from the seed voxel uses the same path sums, with the
 incoming direction fixed to the peak (`mcat.prepare_launches`).
 
-```{figure} /_generated/fig_launches.png
+```{generated-figure} launches
 :name: fig-launches
 :alt: Seeds with their half-walk directions, and a bundle's seed probability
 
@@ -368,7 +368,7 @@ From $S$, $\beta$, and the absorbed mass, MCAT writes the following (see {doc}`o
   voxel's ODF integrates to its density. Where bundles cross, each bundle's ODF keeps only
   the lobe its own walkers use.
 
-```{figure} /_generated/fig_visitodf.png
+```{generated-figure} visitodf
 :name: fig-visitodf
 :alt: fODF glyphs vs the visitation ODFs of the two phantom bundles at their crossing
 

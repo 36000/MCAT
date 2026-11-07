@@ -32,7 +32,7 @@ R_BRAIN = 18.5
 ARC_C, ARC_R, ARC_W = np.array([19.5, 5.0]), 13.0, 2.2     # arc centre, radius, half width
 STEM_X, STEM_W = 19.5, 1.6                                  # stem: vertical, x = STEM_X +- STEM_W
 VENT_C, VENT_R = np.array([11.5, 25.0]), 2.6
-CACHE = Path(os.environ.get("MCAT_DOCS_CACHE", Path(__file__).parent / "_cache"))
+CACHE = Path(os.environ.get("MCAT_DOCS_CACHE", Path(__file__).resolve().parents[1] / "build" / "cache"))
 
 # ------------------------------------------------------------------ style
 # Validated (dataviz skill) categorical slots, used in this fixed order; light surface.
@@ -291,7 +291,7 @@ _CHAINS = {}
 
 
 def build_chain(moments=False, double_odf=True, angle=35.0):
-    """The real mcat.Chain on the phantom (transitions cached in ``_cache/``)."""
+    """The real mcat.Chain on the phantom (transitions cached in ``docs/build/cache/``)."""
     from mcat import Chain, ChainConfig
 
     key = (moments, double_odf, angle)
