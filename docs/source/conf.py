@@ -2,8 +2,16 @@
 import sys
 from pathlib import Path
 
+# docs/
+#   source/      these pages, conf.py, references.bib
+#   static/      hand-written assets (CSS)
+#   _ext/        the mcat_animations extension
+#   animations/  scripts that render the figures and animations
+#   build/       everything generated: html/, generated/ (rendered media), cache/
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE / "_ext"))
+DOCS = HERE.parent
+GENERATED = DOCS / "build" / "generated"
+sys.path.insert(0, str(DOCS / "_ext"))
 
 project = "MCAT"
 author = "The MCAT developers"
@@ -33,8 +41,7 @@ extensions = [
 
 source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
 root_doc = "index"
-exclude_patterns = ["_build", "_generated", "animations", "Thumbs.db", ".DS_Store"]
-templates_path = ["_templates"]
+exclude_patterns = ["Thumbs.db", ".DS_Store"]
 
 # ------------------------------------------------------------------ MyST
 myst_enable_extensions = ["dollarmath", "amsmath", "colon_fence", "deflist", "attrs_block",
@@ -68,8 +75,8 @@ bibtex_reference_style = "author_year"
 # ------------------------------------------------------------------ HTML
 html_theme = "pydata_sphinx_theme"
 html_title = "MCAT"
-(HERE / "_generated").mkdir(exist_ok=True)   # rendered by the mcat_animations extension
-html_static_path = ["_static", "_generated"]
+GENERATED.mkdir(parents=True, exist_ok=True)   # filled by the mcat_animations extension
+html_static_path = [str(DOCS / "static"), str(GENERATED)]
 html_css_files = ["mcat.css"]
 html_theme_options = {
     "github_url": "https://github.com/36000/MCAT",

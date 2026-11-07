@@ -1,14 +1,21 @@
-"""Sphinx extension: render the docs' animations and figures, and the ``animation`` directive.
+"""Sphinx extension: render the docs' animations and figures, and the directives that show them.
+
+Layout (``docs/``)::
+
+    source/        the pages (Sphinx's srcdir)
+    animations/    anim_*.py and fig_*.py, with the shared phantom
+    build/generated/   their rendered output (served as static files)
+    build/cache/       the phantom's chains (see animations/phantom.py)
 
 At ``builder-inited`` every ``animations/anim_*.py`` and ``animations/fig_*.py`` is rendered
-(by ``animations/_render.py``, one subprocess each, in parallel) into ``_generated/``, unless
-its output is up to date: a hash of the script, the shared phantom module and MCAT's source is
-kept in ``_generated/.hashes.json``.
+(by ``animations/_render.py``, one subprocess each, in parallel) into ``build/generated/``,
+unless its output is up to date: a hash of the script, the shared phantom module and MCAT's
+source is kept in ``build/generated/.hashes.json``.
 
 ``MCAT_DOCS_ANIMATIONS``:  ``mp4`` (default), ``gif`` (no ffmpeg needed), or ``skip`` (render
 nothing; missing outputs become placeholders, for quick text edits).
 
-In MyST::
+In MyST, an animation (a numbered figure holding a video; ``:plain:`` for an unnumbered one)::
 
     ```{animation} forward
     :name: fig-forward
@@ -16,10 +23,17 @@ In MyST::
     Caption, with *markup* and $math$.
     ```
 
-``:plain:`` makes it an unnumbered container instead of a figure.
+and a static figure rendered by ``animations/fig_<name>.py``::
+
+    ```{generated-figure} tissue_states
+    :name: fig-phantom
+
+    Caption.
+    ```
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -36,39 +50,40 @@ from sphinx.util import logging
 from sphinx.util.docutils import SphinxDirective
 
 log = logging.getLogger(__name__)
-OUT = "_generated"
+BLANK_PNG = base64.b64decode(  # 1x1 transparent PNG: a placeholder in skip mode
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+
+
+def paths(srcdir):
+    """(animation scripts, rendered output, MCAT's package source) for docs/source = srcdir."""
+    docs = Path(srcdir).resolve().parent
+    return docs / "animations", docs / "build" / "generated", docs.parent / "src" / "mcat"
 
 
 def _mode():
     return os.environ.get("MCAT_DOCS_ANIMATIONS", "mp4").lower()
 
 
-def _digest(paths):
+def _digest(files):
     h = hashlib.sha1()
-    for p in paths:
+    for p in files:
         h.update(p.name.encode())
         h.update(p.read_bytes())
     return h.hexdigest()
 
 
 def render_all(app):
-    src = Path(app.srcdir)
-    adir, out = src / "animations", src / OUT
-    out.mkdir(exist_ok=True)
+    adir, out, pkg = paths(app.srcdir)
+    out.mkdir(parents=True, exist_ok=True)
     mode = _mode()
     if mode == "skip":
         log.info("[mcat] MCAT_DOCS_ANIMATIONS=skip: not rendering animations")
-        import base64
-
-        blank = base64.b64decode(  # 1x1 transparent PNG, so static figures still resolve
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
         for s in adir.glob("fig_*.py"):
             f = out / f"{s.stem}.png"
             if not f.exists():
-                f.write_bytes(blank)
+                f.write_bytes(BLANK_PNG)
         return
-    pkg = sorted((src.parent / "src" / "mcat").glob("*.py"))
-    shared = _digest([adir / "phantom.py", adir / "_render.py", *pkg])
+    shared = _digest([adir / "phantom.py", adir / "_render.py", *sorted(pkg.glob("*.py"))])
     hfile = out / ".hashes.json"
     hashes = json.loads(hfile.read_text()) if hfile.exists() else {}
     ext = "gif" if mode == "gif" else "mp4"
@@ -112,30 +127,63 @@ def render_all(app):
     log.info("[mcat] done in %.0fs", time.time() - t0)
 
 
-class Animation(SphinxDirective):
-    """A numbered figure holding a looping, scrubbable video (poster image elsewhere)."""
-
+class _Generated(SphinxDirective):
     required_arguments = 1
     has_content = True
     option_spec = {"name": directives.unchanged, "width": directives.unchanged,
-                   "alt": directives.unchanged, "plain": directives.flag}
+                   "alt": directives.unchanged}
+    prefix = ""
+
+    def stem(self):
+        name = self.arguments[0]
+        return name if name.startswith(self.prefix) else self.prefix + name
+
+    def generated(self, filename):
+        """(absolute path, image uri relative to this document) of a rendered file."""
+        _, out, _ = paths(self.env.srcdir)
+        f = out / filename
+        self.env.note_dependency(str(f))
+        here = Path(self.env.srcdir) / Path(self.env.docname).parent
+        return f, Path(os.path.relpath(f, here)).as_posix()
+
+    def caption(self, fig, plain=False):
+        """Directive content: the first paragraph is the caption, the rest a legend."""
+        if not self.content:
+            return
+        box = nodes.Element()
+        self.state.nested_parse(self.content, self.content_offset, box)
+        if plain:
+            fig += box.children
+            return
+        first = box[0] if len(box) and isinstance(box[0], nodes.paragraph) else None
+        rest = list(box)
+        if first is not None:
+            cap = nodes.caption(first.rawsource, "", *first.children)
+            cap.source, cap.line = first.source, first.line
+            fig += cap
+            rest = rest[1:]
+        if rest:
+            fig += nodes.legend("", *rest)
+
+
+class Animation(_Generated):
+    """A numbered figure holding a looping, scrubbable video (its poster for other builders)."""
+
+    option_spec = dict(_Generated.option_spec, plain=directives.flag)
+    prefix = "anim_"
 
     def run(self):
-        name = self.arguments[0]
-        stem = name if name.startswith("anim_") else f"anim_{name}"
+        stem = self.stem()
         ext = "gif" if _mode() == "gif" else "mp4"
-        gen = Path(self.env.srcdir) / OUT
-        video, poster = gen / f"{stem}.{ext}", gen / f"{stem}.png"
-        for f in (video, poster):
-            self.env.note_dependency(str(f))
+        video, _ = self.generated(f"{stem}.{ext}")
+        poster, poster_uri = self.generated(f"{stem}.png")
         plain = "plain" in self.options        # not a numbered figure (e.g. on the landing page)
         fig = (nodes.container if plain else nodes.figure)(classes=["mcat-animation"])
         if not plain:
             self.add_name(fig)
-        depth = self.env.docname.count("/")
-        static = "../" * depth + "_static/"
+        static = "../" * self.env.docname.count("/") + "_static/"
         width = self.options.get("width", "100%")
-        alt = self.options.get("alt", name)
+        alt = self.options.get("alt", self.arguments[0])
         if video.exists():
             if ext == "mp4":
                 html = (f'<video class="mcat-video" controls loop muted autoplay playsinline '
@@ -146,31 +194,33 @@ class Animation(SphinxDirective):
                 html = f'<img class="mcat-video" src="{static}{stem}.gif" alt="{alt}" style="width:{width}">'
             fig += nodes.raw("", html, format="html")
             if poster.exists():
-                img = nodes.image(uri=f"/{OUT}/{stem}.png", alt=alt)
-                fig += addnodes.only("", img, expr="not html")
+                fig += addnodes.only("", nodes.image(uri=poster_uri, alt=alt), expr="not html")
         else:
             fig += nodes.paragraph("", f"[animation '{stem}' not rendered: set MCAT_DOCS_ANIMATIONS=mp4]",
                                    classes=["mcat-placeholder"])
-        if self.content:
-            box = nodes.Element()
-            self.state.nested_parse(self.content, self.content_offset, box)
-            first = box[0] if len(box) and isinstance(box[0], nodes.paragraph) else None
-            if first is not None and plain:
-                fig += box.children
-                rest = []
-            elif first is not None:
-                cap = nodes.caption(first.rawsource, "", *first.children)
-                cap.source, cap.line = first.source, first.line
-                fig += cap
-                rest = list(box[1:])
-            else:
-                rest = list(box)
-            if rest:
-                fig += nodes.legend("", *rest)
+        self.caption(fig, plain)
+        return [fig]
+
+
+class GeneratedFigure(_Generated):
+    """A numbered figure showing the image rendered by ``animations/fig_<name>.py``."""
+
+    prefix = "fig_"
+
+    def run(self):
+        _, uri = self.generated(f"{self.stem()}.png")
+        fig = nodes.figure(classes=["mcat-figure"])
+        self.add_name(fig)
+        img = nodes.image(uri=uri, alt=self.options.get("alt", self.arguments[0]))
+        if "width" in self.options:
+            img["width"] = self.options["width"]
+        fig += img
+        self.caption(fig)
         return [fig]
 
 
 def setup(app):
     app.connect("builder-inited", render_all)
     app.add_directive("animation", Animation)
-    return dict(version="0.1", parallel_read_safe=True, parallel_write_safe=True)
+    app.add_directive("generated-figure", GeneratedFigure)
+    return dict(version="0.2", parallel_read_safe=True, parallel_write_safe=True)
