@@ -12,7 +12,7 @@ def main(argv=None):
     p.add_argument("--n-proc", type=int, help="threads (required unless --rois-only)")
     p.add_argument("--max-mem", help="memory budget, e.g. 16GB (required unless --rois-only)")
     p.add_argument("--moments", action="store_true", help="spatial first moments (narrower bundles)")
-    p.add_argument("--tol", type=float, default=1e-10, help="remaining walker mass at which solves stop")
+    p.add_argument("--tol", type=float, default=1e-6, help="remaining walker mass at which solves stop (default 1e-6)")
     p.add_argument("--angle", type=float, default=35.0, help="maximum turn per one-voxel hop (deg)")
     p.add_argument("--single-odf", action="store_true", help="first-order hops (pyAFQ-like), not doubleODF")
     p.add_argument("--bundles", nargs="+", help="pyAFQ bundle names (default: all)")
@@ -20,6 +20,10 @@ def main(argv=None):
                    help="soft maximum streamline length, mm: states where walkers would mostly outlast "
                         "it (traps) end them, for every bundle (0: off)")
     p.add_argument("--no-krylov", action="store_true", help=argparse.SUPPRESS)   # no-op (kept for old scripts)
+    p.add_argument("--out-dir", help="write MCAT's outputs here (default: <output_dir>/mcat); "
+                   "output_dir is then only read for pyAFQ's derivatives")
+    p.add_argument("--verbose", action="store_true",
+                   help="log timing inside the solves (ms per power step)")
     p.add_argument("--mni-thalamus", action="store_true",
                    help="keep the template's thalamic start / end ROIs (default: SynthSeg's thalami)")
     p.add_argument("--no-viz", action="store_true",
@@ -55,7 +59,7 @@ def main(argv=None):
     afq = ParticipantAFQ(a.dwi, a.bval, a.bvec, a.t1, a.output_dir, **kwargs)
     if a.rois_only:
         page = write_rois(afq, a.bundles, a.moments, synthseg_thalamus=not a.mni_thalamus, no_midline=a.no_midline,
-                          midline_tol=a.midline_tol)
+                          midline_tol=a.midline_tol, out_dir=a.out_dir)
         logging.getLogger("mcat").info("ROI page: %s", page)
         return
     if a.n_proc is None or a.max_mem is None:
@@ -63,7 +67,7 @@ def main(argv=None):
     run(afq, a.n_proc, a.max_mem, a.bundles, a.moments, a.tol, a.angle, not a.single_odf, viz=not a.no_viz,
         synthseg_thalamus=not a.mni_thalamus,
         max_length=a.max_length, viz_rois=a.viz_rois, no_midline=a.no_midline,
-        midline_tol=a.midline_tol)
+        midline_tol=a.midline_tol, out_dir=a.out_dir, verbose=a.verbose)
 
 
 def afq_kwargs(text):

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import combinations
 
@@ -29,17 +30,46 @@ from .chain import VALID_ENDS
 
 log = logging.getLogger("mcat")
 
+class Clock:
+    """Wall time per stage, summed over calls: ``with clock("forward"): ...``."""
+
+    def __init__(self):
+        self.t = {}
+
+    def add(self, key, seconds):
+        self.t[key] = self.t.get(key, 0.0) + seconds
+
+    @contextmanager
+    def __call__(self, key):
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.add(key, time.perf_counter() - t0)
+
+    def report(self, title, total=None):
+        """One log line per stage, largest first, with its share of ``total`` (default: the sum)."""
+        total = total or sum(self.t.values()) or 1e-9
+        log.info("%s (%.0fs):", title, total)
+        for k, v in sorted(self.t.items(), key=lambda kv: -kv[1]):
+            log.info("  %-24s %8.1fs  %5.1f%%", k, v, 100 * v / total)
+
+
 STALL_WINDOW, STALL_RATIO = 200, 0.9   # stalled: remaining mass fell < 10% in 200 steps
 FLOAT_BLOCKS_PER_COLUMN = 6    # float64 arrays per solution column at the peak
 OVERLENGTH_SURVIVAL = 0.5      # states where more walkers than this outlast the soft max length
 
 
-def solve_series(mul, x0, mask, tol, max_iter, what, ncomp=1):
+def solve_series(mul, x0, mask, tol, max_iter, what, ncomp=1, verbose=False):
     """total = sum_t (M A)^t x0 per column (M = diag(mask)), A x = mul(x, out), by power
     iteration until the remaining mass (mass rows, relative to the largest column's start) is
     below ``tol``.  Stops early when it stalls (mass circulating in states that almost never
     get absorbed) and reports where that mass sits as ``info["trapped"]``.  ``x0`` is consumed.
+    ``verbose``: log the time per step (matrix product / masking and summing) every 100 steps.
     Returns (total, info)."""
+    t_start = time.perf_counter()
+    t_mul = t_acc = 0.0
+    w_mul = w_acc = 0.0      # since the last verbose line
     total = x0.copy()
     term, nxt = x0, np.empty_like(x0)
     mask = np.ascontiguousarray(mask)
@@ -48,12 +78,24 @@ def solve_series(mul, x0, mask, tol, max_iter, what, ncomp=1):
     info = dict(iterations=0, residual=0.0, stalled=False)
     ref = None
     for it in range(1, max_iter + 1):
+        t0 = time.perf_counter()
         mul(term, nxt)
+        t1 = time.perf_counter()
         res = float(K.mask_accumulate(nxt, mask, total, ncomp).max()) / scale
+        t2 = time.perf_counter()
+        t_mul += t1 - t0
+        t_acc += t2 - t1
+        w_mul += t1 - t0
+        w_acc += t2 - t1
         term, nxt = nxt, term
         info.update(iterations=it, residual=res)
         if it % 100 == 0:
             log.info("  %s step %d: remaining mass %.2e", what, it, res)
+            if verbose:
+                log.info("  [timing] %s steps %d-%d: %.1f ms/step (matrix product %.1f, mask+sum %.1f); "
+                         "%d rows x %d columns", what, it - 99, it, 10 * (w_mul + w_acc), 10 * w_mul,
+                         10 * w_acc, x0.shape[0], x0.shape[1])
+                w_mul = w_acc = 0.0
         if res < tol:
             break
         if not np.isfinite(res) or res > 1e6:
@@ -67,6 +109,11 @@ def solve_series(mul, x0, mask, tol, max_iter, what, ncomp=1):
             ref = res
     if info["residual"] >= tol:     # stalled or max_iter reached
         info["trapped"] = np.abs(term[rows]).sum(1).astype(np.float32) / scale
+    n = max(info["iterations"], 1)
+    info.update(seconds=round(time.perf_counter() - t_start, 1), ms_per_step=round(1e3 * (t_mul + t_acc) / n, 2))
+    if verbose:
+        log.info("  [timing] %s: %d steps in %.1fs, %.1f ms/step (matrix product %.1f, mask+sum %.1f)",
+                 what, n, info["seconds"], 1e3 * (t_mul + t_acc) / n, 1e3 * t_mul / n, 1e3 * t_acc / n)
     return total, info
 
 
@@ -235,21 +282,31 @@ def _trapped(chain, info, what, names, on_trapped):
     on_trapped(what, names, vol)
 
 
-def _solve_group(chain, plans, L, tol, max_iter, on_result, on_trapped=None):
+def _solve(chain, x0, mask, tol, max_iter, what, verbose=False):
+    mul = chain.mul_forward if what == "forward" else chain.mul_backward
+    return solve_series(mul, x0, mask, tol, max_iter, what, chain.ncomp, verbose)
+
+
+def _solve_group(chain, plans, L, tol, max_iter, on_result, on_trapped=None, verbose=False, clock=None):
     t0 = time.time()
+    gclock = Clock()
     nb, Ns, nc = chain.nb, chain.n_states, chain.ncomp
     offs = np.cumsum([0] + [p.C for p in plans])
     names = [p.name for p in plans]
     if len(plans) > 1:
         log.info("solving %d bundles together (%d columns): %s", len(plans), offs[-1], ", ".join(names))
-    mask = np.concatenate([p.mask for p in plans], axis=1)
-    for p in plans:
-        p.mask = None
-    r = np.concatenate([chain.absorb_rhs(p.absw) for p in plans], axis=1)
-    r *= mask
-    beta, info_b = solve_series(chain.mul_backward, r, mask, tol, max_iter, "backward", nc)
-    _trapped(chain, info_b, "backward", names, on_trapped)
+    with gclock("masks and absorption"):
+        mask = np.concatenate([p.mask for p in plans], axis=1)
+        for p in plans:
+            p.mask = None
+        r = np.concatenate([chain.absorb_rhs(p.absw) for p in plans], axis=1)
+        r *= mask
+    with gclock("backward solve"):
+        beta, info_b = _solve(chain, r, mask, tol, max_iter, "backward", verbose)
+    with gclock("trapped maps"):
+        _trapped(chain, info_b, "backward", names, on_trapped)
     del r
+    t_init = time.perf_counter()
     P = L.pair_seed.size
     pi0 = np.zeros((Ns * nc, int(offs[-1])))
     starts = []
@@ -271,9 +328,13 @@ def _solve_group(chain, plans, L, tol, max_iter, on_result, on_trapped=None):
         starts.append((a0, seed_prob, pb))
     if getattr(chain, "kill", None) is not None:
         pi0[np.repeat(chain.kill, nc)] = 0.0
-    S, info_f = solve_series(chain.mul_forward, pi0, mask, tol, max_iter, "forward", nc)
-    _trapped(chain, info_f, "forward", names, on_trapped)
+    gclock.add("seed weights (forward start)", time.perf_counter() - t_init)
+    with gclock("forward solve"):
+        S, info_f = _solve(chain, pi0, mask, tol, max_iter, "forward", verbose)
+    with gclock("trapped maps"):
+        _trapped(chain, info_f, "forward", names, on_trapped)
     del pi0, mask
+    t_dens = time.perf_counter()
     out = {}
     ti = chain.tindex[L.seed_lin]
     pt = ti[L.pair_seed]
@@ -300,35 +361,60 @@ def _solve_group(chain, plans, L, tol, max_iter, on_result, on_trapped=None):
         res = BundleResult(p.name, L.seeds, np.clip(seed_prob, 0, None), np.clip(density, 0, None),
                            np.clip(endpoints, 0, None), info, np.clip(dcls, 0, None).astype(np.float32))
         if on_result is not None:
+            tw = time.perf_counter()
             on_result(res)
+            gclock.add("writing outputs", time.perf_counter() - tw)
+            t_dens += time.perf_counter() - tw
         out[p.name] = res
+    gclock.add("densities and endpoints", time.perf_counter() - t_dens)
     log.info("group done in %.0fs (backward %d steps, forward %d steps)", time.time() - t0,
              info_b["iterations"], info_f["iterations"])
+    log.info("  group time: " + ", ".join(f"{k} {v:.3g}s" for k, v in
+                                          sorted(gclock.t.items(), key=lambda kv: -kv[1]) if v >= 0.005))
+    if clock is not None:
+        for k, v in gclock.t.items():
+            clock.add(k, v)
     return out
 
 
-def segment_bundles(chain, specs, launches, tol=1e-10, max_mem=8e9, max_iter=5000,
-                    valid_classes=VALID_ENDS, on_result=None, on_trapped=None):
+def segment_bundles(chain, specs, launches, tol=1e-6, max_mem=8e9, max_iter=5000,
+                    valid_classes=VALID_ENDS, on_result=None, on_trapped=None, verbose=False,
+                    clock=None):
     """Segment bundles, sharing solves.  ``specs``: dicts with ``name`` and optional
     ``include`` (list of masks), ``exclude``, ``start``, ``end`` (boolean volumes on the chain
     grid).  Bundles are packed in order into groups whose columns fit in ``max_mem`` bytes;
     each group costs one backward and one forward series.
     ``on_trapped(direction, names, volume)``: called when a solve stalls or runs out of steps,
     with the mass it could not finish per voxel (relative to the largest column's start).
+    ``verbose``: timing inside the solves.  ``clock``: a Clock to add the time per stage to
+    (default: a new one, reported at the end).
     Returns {name: BundleResult}."""
+    own = clock is None
+    clock = clock or Clock()
+    t_all = time.perf_counter()
     cap = max_columns(chain, launches, max_mem)
     log.info("column groups of up to %d columns (%.1f GB budget)", cap, max_mem / 1e9)
     out, group, used = {}, [], 0
-    for spec in specs:
-        p = _Plan(chain, spec, valid_classes)
+    it = iter(specs)
+    while True:
+        with clock("bundle ROIs"):          # specs may warp each bundle's ROIs as it is asked for
+            spec = next(it, None)
+        if spec is None:
+            break
+        with clock("bundle plans"):
+            p = _Plan(chain, spec, valid_classes)
         if p.C > cap:
             log.warning("%s needs %d columns, more than fit in max_mem (%d); solving it alone",
                         p.name, p.C, cap)
         if group and used + p.C > cap:
-            out.update(_solve_group(chain, group, launches, tol, max_iter, on_result, on_trapped))
+            out.update(_solve_group(chain, group, launches, tol, max_iter, on_result, on_trapped,
+                                    verbose, clock))
             group, used = [], 0
         group.append(p)
         used += p.C
     if group:
-        out.update(_solve_group(chain, group, launches, tol, max_iter, on_result, on_trapped))
+        out.update(_solve_group(chain, group, launches, tol, max_iter, on_result, on_trapped,
+                                verbose, clock))
+    if own:
+        clock.report("bundle segmentation time", time.perf_counter() - t_all)
     return out
