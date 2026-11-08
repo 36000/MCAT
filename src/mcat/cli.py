@@ -10,7 +10,9 @@ def main(argv=None):
     p.add_argument("t1", help="T1w image, registered to the DWI (pyAFQ's t1_file)")
     p.add_argument("output_dir")
     p.add_argument("--n-proc", type=int, help="threads (required unless --rois-only)")
-    p.add_argument("--max-mem", help="memory budget, e.g. 16GB (required unless --rois-only)")
+    p.add_argument("--max-mem", default="auto",
+                   help="memory budget, e.g. 16GB, or auto (default): min(80%%, limit - 10 GB) of the job's "
+                        "memory limit (cgroup / SLURM / physical), less what is already in use")
     p.add_argument("--moments", action="store_true", help="spatial first moments (narrower bundles)")
     p.add_argument("--tol", type=float, default=1e-6, help="remaining walker mass at which solves stop (default 1e-6)")
     p.add_argument("--angle", type=float, default=35.0, help="maximum turn per one-voxel hop (deg)")
@@ -62,8 +64,8 @@ def main(argv=None):
                           midline_tol=a.midline_tol, out_dir=a.out_dir)
         logging.getLogger("mcat").info("ROI page: %s", page)
         return
-    if a.n_proc is None or a.max_mem is None:
-        p.error("--n-proc and --max-mem are required (except with --rois-only)")
+    if a.n_proc is None:
+        p.error("--n-proc is required (except with --rois-only)")
     run(afq, a.n_proc, a.max_mem, a.bundles, a.moments, a.tol, a.angle, not a.single_odf, viz=not a.no_viz,
         synthseg_thalamus=not a.mni_thalamus,
         max_length=a.max_length, viz_rois=a.viz_rois, no_midline=a.no_midline,

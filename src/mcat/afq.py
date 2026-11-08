@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -290,6 +291,85 @@ def mcat_dir(afq, moments=False, out_dir=None):
     return Path(afq.kwargs["output_dir"]) / ("mcat-moments" if moments else "mcat")
 
 
+GiB = 1024 ** 3
+AUTO_FRACTION, AUTO_HEADROOM = 0.8, 10 * GiB    # max_mem="auto": min(80% of the limit, limit - 10 GB)
+
+
+def memory_limit():
+    """(bytes this process may use, where that came from): the smallest of its cgroup's
+    memory limits (what SLURM and containers enforce), SLURM's request, and physical memory."""
+    found = []
+    try:
+        for line in open("/proc/self/cgroup"):
+            hid, ctrl, path = line.rstrip("\n").split(":", 2)
+            if hid == "0" and ctrl == "":                       # cgroup v2
+                files = ["memory.max"]
+                root = "/sys/fs/cgroup"
+            elif "memory" in ctrl.split(","):                   # cgroup v1
+                files = ["memory.limit_in_bytes"]
+                root = "/sys/fs/cgroup/memory"
+            else:
+                continue
+            p = Path(path)
+            for d in [p, *p.parents]:                          # the job's cgroup and its parents
+                for f in files:
+                    try:
+                        v = (Path(root) / d.relative_to("/") / f).read_text().strip()
+                    except OSError:
+                        continue
+                    if v.isdigit() and int(v) < 1 << 60:
+                        found.append((int(v), f"cgroup {d}"))
+    except OSError:
+        pass
+    env = os.environ
+    if env.get("SLURM_MEM_PER_NODE", "").isdigit():
+        found.append((int(env["SLURM_MEM_PER_NODE"]) * 1024 ** 2, "SLURM_MEM_PER_NODE"))
+    elif env.get("SLURM_MEM_PER_CPU", "").isdigit():
+        cpus = env.get("SLURM_CPUS_ON_NODE") or env.get("SLURM_CPUS_PER_TASK") or "1"
+        if cpus.isdigit():
+            found.append((int(env["SLURM_MEM_PER_CPU"]) * 1024 ** 2 * int(cpus), "SLURM_MEM_PER_CPU"))
+    try:
+        found.append((os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"), "physical memory"))
+    except (ValueError, OSError, AttributeError):
+        pass
+    return min(found) if found else (None, "unknown")
+
+
+def memory_in_use():
+    """Resident memory of this process (bytes; 0 if unknown)."""
+    try:
+        for line in open("/proc/self/status"):
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return 0
+
+
+def _budget(max_mem, chain, launches):
+    """max_mem as segment_bundles takes it (bytes for the chain, the launches and the solve
+    columns).  "auto": min(80% of the memory limit, limit - 10 GB), at least half the limit,
+    less what the process already holds besides the chain and the launches (pyAFQ's data,
+    the fODF, ...).  An explicit size is used as given, with a warning above the limit."""
+    limit, src = memory_limit()
+    held = memory_in_use()
+    other = max(held - chain.nbytes - launches.nbytes, 0)
+    if isinstance(max_mem, str) and max_mem.strip().lower() == "auto":
+        if limit is None:
+            raise ValueError("max_mem='auto': cannot tell this machine's memory limit; give a size")
+        total = max(min(AUTO_FRACTION * limit, limit - AUTO_HEADROOM), 0.5 * limit)
+        budget = total - other
+        log.info("memory: limit %.1f GB (%s), MCAT may use %.1f GB; %.1f GB already held besides the chain "
+                 "(%.1f GB) and launches (%.1f GB) -> %.1f GB budget", limit / GiB, src, total / GiB,
+                 other / GiB, chain.nbytes / GiB, launches.nbytes / GiB, budget / GiB)
+        return budget
+    b = _bytes(max_mem)
+    if limit is not None and b + other > limit:
+        log.warning("max_mem %.1f GB plus the %.1f GB already held exceeds this job's memory limit "
+                    "(%.1f GB, %s): it may be killed; try max_mem='auto'", b / GiB, other / GiB, limit / GiB, src)
+    return b
+
+
 def _bytes(x):
     if isinstance(x, str):
         m = re.fullmatch(r"\s*([\d.]+)\s*([kmgt]?)b?\s*", x.lower())
@@ -299,14 +379,16 @@ def _bytes(x):
     return float(x)
 
 
-def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-6, angle=35.0, double_odf=True,
+def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angle=35.0, double_odf=True,
         cores=True, viz=True, synthseg_thalamus=True, max_length=250.0, viz_rois=False,
         no_midline=(), midline_tol=10.0, out_dir=None, verbose=False):
     """Segment pyAFQ's bundles with MCAT.
 
     afq         ``ParticipantAFQ`` or ``GroupAFQ`` (every participant in turn)
     n_proc      threads
-    max_mem     memory budget, bytes or e.g. "16GB": sets how many bundles share each solve
+    max_mem     memory budget, bytes, e.g. "16GB", or "auto" (default): sets how many bundles
+                share each solve.  "auto" reads the job's limit (cgroup / SLURM / physical),
+                keeps min(80%, limit - 10 GB) of it and subtracts what is already held
     bundles     pyAFQ bundle names (default: all in the bundle dictionary)
     moments     spatial first moments (narrower, more accurate bundles; ~5x slower)
     tol         remaining walker mass at which the solves stop (relative)
@@ -430,7 +512,8 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-6, angle=35.0,
         log.warning("%s solve of %s did not finish: the mass left (%.1e of the start) is mapped in %s; "
                     "most of it at (%.0f, %.0f, %.0f) mm", what, ", ".join(names), vol.sum(), f, *peak)
 
-    results = segment_bundles(chain, specs(), launches, tol=tol, max_mem=_bytes(max_mem), on_result=write,
+    results = segment_bundles(chain, specs(), launches, tol=tol, max_mem=_budget(max_mem, chain, launches),
+                              on_result=write,
                                on_trapped=trapped, verbose=verbose, clock=clock)
     with open(f"{stem}_desc-mcat_table.tsv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t")
