@@ -229,15 +229,33 @@ def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_mid
         if bd[name].get("cross_midline") is False and name in no_midline:
             log.info("%s: no midline exclusion (no_midline)", name)
         elif bd[name].get("cross_midline") is False:
-            own = np.concatenate([np.atleast_1d(x[m]) for m in spec["include"] +
-                                  [spec[k] for k in ("start", "end") if k in spec]])
             t = r["midline_tol"] if midline_tol is None or not r["midline_tol"] else midline_tol
-            exc.append(x > t if own.mean() < 0 else x < -t)
+            left = _is_left(name, spec, x)
+            exc.append(x > t if left else x < -t)
+            log.info("%s: kept to the %s hemisphere (other side excluded past %g mm)", name,
+                     "left" if left else "right", t)
         spec["exclude"] = np.any(exc, axis=0) if exc else None
         yield spec
 
 
 HYPOTHALAMUS = (102, 103)     # SynthSegLabels.LEFT_ / RIGHT_HYPOTHALAMUS
+
+
+def _is_left(name, spec, x):
+    """Which hemisphere a one-sided bundle belongs to: its name ("Left ..." / "Right ..."), else
+    its include ROIs, else its start / end ROIs, each ROI counted once (its centre).  Not
+    pooled voxels: a big midline end ROI shared by both sides (the corticospinal tracts'
+    brainstem) would outvote the waypoints and put a bundle on the wrong side."""
+    n = name.lower()
+    if n.startswith("left") or n.endswith("_l") or n.endswith(" l"):
+        return True
+    if n.startswith("right") or n.endswith("_r") or n.endswith(" r"):
+        return False
+    for rois in (spec["include"], [spec[k] for k in ("start", "end") if spec.get(k) is not None]):
+        c = [x[m].mean() for m in rois if m.any()]
+        if c:
+            return float(np.mean(c)) < 0
+    return True
 
 
 def _synthseg_on_grid(afq, ref_img, hypothalamus=False, hypo_file=None):
