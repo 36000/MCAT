@@ -117,34 +117,44 @@ def pmf_and_cone_mass(sh_rows, geo: Geometry, chunk=20000):
     return X, Y
 
 
+def vertex_visits(density_class, sh_rows, geo: Geometry):
+    """Expected visits per sphere direction, (n, V): a voxel's visits by direction class
+    (density_class, (n, 26)) spread over the class's directions as the chain assumes,
+    q ~ X Y (kernel.class_q, with its fallbacks), from the fODF there (sh_rows, (n, ncoef)).
+    Rows sum to the voxel's visits.  Not symmetrised: a direction is the walker's heading."""
+    import scipy.sparse as sps
+
+    V = geo.n_dirs
+    cls = sps.csr_matrix((np.ones(V), (np.arange(V), geo.vbin)), shape=(V, geo.nb))
+    X, Y = pmf_and_cone_mass(sh_rows, geo)
+    X, Y = X.astype(np.float64), Y.astype(np.float64)
+    q = np.zeros_like(X)
+    todo = np.ones((len(X), geo.nb), bool)
+    for w in (X * Y, Y, np.ones_like(X)):           # class_q's fallbacks
+        tot = np.asarray(cls.T @ w.T).T              # (n, 26)
+        use = todo & (tot > 0)
+        q += np.where(use[:, geo.vbin], w / np.where(tot > 0, tot, 1)[:, geo.vbin], 0)
+        todo &= ~use
+    return np.asarray(density_class, np.float64)[:, geo.vbin] * q
+
+
 def visitation_odf(density_class, sh_rows, geo: Geometry, sh_order=8, chunk=20000):
     """A bundle's visitation ODF: the directions its walkers travel in each voxel, as SH
     coefficients in the fODF's basis (DIPY descoteaux07, legacy, symmetric).
 
     density_class (n, 26): expected visits by direction class, per voxel; sh_rows (n, ncoef):
     the fODF there.  Within a class the direction is spread as the chain assumes,
-    q ~ X Y (kernel.class_q).  The ODF is antipodally symmetrised and in expected visits per
-    steradian, so it integrates to the voxel's density (c_00 = density / (2 sqrt(pi)))."""
-    import scipy.sparse as sps
+    q ~ X Y (kernel.class_q; vertex_visits).  The ODF is antipodally symmetrised and in
+    expected visits per steradian, so it integrates to the voxel's density
+    (c_00 = density / (2 sqrt(pi)))."""
     from dipy.core.sphere import Sphere
     from dipy.reconst.shm import sh_to_sf_matrix
 
-    V = geo.n_dirs
     _, inv = sh_to_sf_matrix(Sphere(xyz=geo.vertices), sh_order_max=sh_order, return_inv=True)
-    cls = sps.csr_matrix((np.ones(V), (np.arange(V), geo.vbin)), shape=(V, geo.nb))
     anti = geo.antipode()
     out = np.zeros((len(sh_rows), inv.shape[1]), np.float32)
     for s in range(0, len(sh_rows), chunk):
-        X, Y = pmf_and_cone_mass(sh_rows[s:s + chunk], geo)
-        X, Y = X.astype(np.float64), Y.astype(np.float64)
-        q = np.zeros_like(X)
-        todo = np.ones((len(X), geo.nb), bool)
-        for w in (X * Y, Y, np.ones_like(X)):       # class_q's fallbacks
-            tot = np.asarray(cls.T @ w.T).T          # (n, 26)
-            use = todo & (tot > 0)
-            q += np.where(use[:, geo.vbin], w / np.where(tot > 0, tot, 1)[:, geo.vbin], 0)
-            todo &= ~use
-        f = np.asarray(density_class[s:s + chunk], np.float64)[:, geo.vbin] * q
+        f = vertex_visits(density_class[s:s + chunk], sh_rows[s:s + chunk], geo)
         c = (0.5 * (f + f[:, anti])) @ inv
         # exact integral (the sphere's vertices do not cover equal solid angles)
         c00 = f.sum(1) / (2 * np.sqrt(np.pi))

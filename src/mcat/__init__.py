@@ -16,6 +16,7 @@ from .afq import run
 from .chain import Chain, ChainConfig
 from .core import bundle_core
 from .fields import BundleFields, endpoint_patches, flux_orientation, restrict_endpoints
+from .fixels import fixel_streamlines, segment_lobes, write_fixel_directory
 from .solve import prepare_launches, segment_bundles
 
 
@@ -26,5 +27,6 @@ def view(*args, **kwargs):
     return _view(*args, **kwargs)
 
 
-__all__ = ["BundleFields", "Chain", "ChainConfig", "bundle_core", "endpoint_patches", "flux_orientation",
-           "prepare_launches", "restrict_endpoints", "run", "segment_bundles", "view"]
+__all__ = ["BundleFields", "Chain", "ChainConfig", "bundle_core", "endpoint_patches", "fixel_streamlines",
+           "flux_orientation", "prepare_launches", "restrict_endpoints", "run", "segment_bundles", "segment_lobes",
+           "view", "write_fixel_directory"]

@@ -201,3 +201,67 @@ The coronal cut through the arcuate counts its re-crossings (the arc bends throu
 plane); the axial cut through the corticospinal tract is crossed once by nearly every walk.
 The phantom tests (`tests/test_fields.py`) check the same identities on a straight bundle,
 where the cut flux equals the streamline count to 1e-12.
+
+## 9. Fixels
+
+Fixel-based analysis measures each fibre population of a voxel (a lobe of the fODF, a
+*fixel*) and needs to know which fixels a tract runs through.  From tractography that is
+the number of streamlines assigned to each fixel.  MCAT gives the same number with no
+streamlines, because its states carry a heading: the density is known per direction class,
+and within a class the headings are spread as the chain's own transitions assume
+(`geometry.vertex_visits`, the same weights that make the visitation ODF).  Summing the
+expected visits over a lobe's directions gives the expected number of bundle-streamline
+steps in that fixel; every step crosses into a neighbouring voxel, so this is the expected
+number of bundle streamlines passing through the fixel.  The fixels of a voxel partition its
+density exactly.
+
+**Fixels** (`fixels.segment_lobes`): each direction of the chain's sphere climbs the fODF to
+its local maximum over the sphere's triangulation, as MRtrix's fod2fixel segments lobes;
+antipodal halves are one fixel; lobes whose saddle is at least 0.8 x the lower peak are one
+fixel (the lmax-8 fit rings, and splits a lobe's shoulder off); lobes whose peak is under
+0.1 x the voxel's maximum are not fixels, and their directions join the nearest fixel, so
+every direction with a positive fODF belongs to one.  Fixels come out in MRtrix's layout
+(count and offset per voxel, directions, one value per fixel) and are written as a fixel
+directory by `fixels.write_fixel_directory` (.mif files written by hand; not yet checked
+against MRtrix's reader).  The fixel directions are those of the chain's fODF, converted to world axes.
+
+**Values** (`fixels.fixel_streamlines`): per fixel, the bundle's expected streamlines
+through it.  With one more solve of the unconditioned chain (every walk from every seed, no
+ROIs: `segment_bundles(chain, [dict(name="whole brain")], launches)`), the same number for
+all traffic through the fixel, and the ratio is the bundle's share of the fixel, a soft fixel
+segmentation; times the fixel's fibre density it is the bundle's part of that density.
+`mcat.run(..., fixels=True)` (CLI `--fixels`) writes all three per bundle, and the bundle's
+share of the solved bundles' streamlines.
+
+On one ds008825 session (1.7 mm, 130 116 white-matter voxels): 257 134 fixels, 1.98 per
+voxel (35% of voxels one, 43% two, 14% three, 5% four), segmented in 24 s; values for a
+bundle in 27 s.  The CST's fixel values sum to 7179.4 against a density of 7180.9, with 1.6
+in directions of no fixel.  In the 14 796 CST voxels with more than one fixel, the fixel
+with the most CST holds a median 85% of the voxel's CST (10th percentile 55%): the
+projection separates the CST from the fibres it crosses.  The share of all traffic is small
+everywhere (at most 0.24; median 0.03 in the CST's densest fixels), because the
+unconditioned chain counts every walk from every seed through the fixel, and in the
+internal capsule most of those are not the pyAFQ-defined CST: thalamocortical and
+corticopontine walks, walks ending in the deep grey matter, walks the include ROIs reject.
+For a segmentation of the fixels among bundles, the share of the solved bundles' streamlines
+is the better-conditioned quantity.
+
+Two caveats.  Within a class the split between directions is a model assumption (the fODF
+weighting the chain uses), not independent evidence: two fixels inside the same 35-degree
+class cone are separated only by that weighting.  And the fixels must come from the fODF
+the chain was built from, on its sphere; fixels from another segmentation can be matched by
+direction but not assumed identical.
+
+The exact version of this is a chain whose states are the fixels themselves, (voxel, lobe)
+instead of (voxel, 26 classes), with transitions weighted by lobe-to-lobe compatibility
+across the shared face: the bundle occupancy at a state is then the per-fixel density with
+no projection, and the chain has about three states per voxel.
+
+**Smoothing for fixel-based analysis.**  MRtrix smooths fixel data along a fixel-to-fixel
+connectivity matrix built from a whole-brain tractogram (the fraction of streamlines through
+fixel *i* that also pass fixel *j*).  The unconditioned chain holds the same information
+without a tractogram: its edge flux between a fixel and the fixels of the neighbouring voxel
+is the one-step connectivity, and the probability that a walk through fixel *i* also passes
+fixel *j* a few voxels away is the corresponding multi-step transition (forwards, and
+backwards for the part of the walk before *i*).  Writing that as MRtrix's sparse
+connectivity format is a possible extension; it is not in this implementation.

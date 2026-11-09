@@ -48,6 +48,9 @@ def main(argv=None):
     p.add_argument("--viz-rois", action="store_true",
                    help="viewer pages also show each bundle's include (green) / exclude (red) ROIs")
     p.add_argument("--flux", action="store_true", help="also write edge-flux maps per bundle (mcat.fields)")
+    p.add_argument("--fixels", action="store_true",
+                   help="also write an MRtrix fixel directory with each bundle's expected streamlines per fixel "
+                        "and its share of all traffic (mcat.fixels; one extra whole-brain solve)")
     p.add_argument("--afq-kwargs", default="{}",
                    help="extra ParticipantAFQ arguments: JSON, or a Python expression giving a dict, "
                         "with afd (AFQ.data.fetch), abd (AFQ.api.bundle_dict), mb (mcat.bundles) and the "
@@ -86,7 +89,7 @@ def main(argv=None):
         synthseg_thalamus=not a.mni_thalamus,
         max_length=a.max_length, viz_rois=a.viz_rois, no_midline=a.no_midline,
         midline_tol=a.midline_tol, out_dir=a.out_dir, verbose=a.verbose,
-        fornix=not a.no_fornix_exclude, flux=a.flux)
+        fornix=not a.no_fornix_exclude, flux=a.flux, fixels=a.fixels)
     if a.pyafq:
         logging.getLogger("mcat").info("pyAFQ's own pipeline on the same inputs -> %s", a.output_dir)
         afq.export_all(viz=not a.no_viz)
