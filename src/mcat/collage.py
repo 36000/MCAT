@@ -25,14 +25,21 @@ VIEW_RULES = (
     (r"forceps|callosum|commissur|^cc|^fmajor$|^fminor$|anteriorthalamic|^atr$|thalamicradiation"
      r"|opticradiation|^or$|retinogeniculate|rgvp|eye", "axial"),
     (r"arcuate|^arc$|^parc$|longitudinal|^slf|^ilf$|^mdlf$|uncinate|^unc$|cingulum|^cgc$|^cgh$|^cing"
-     r"|frontooccipital|^ifo|parahippocampal|aslant|^fat$", "sagittal"),
+     r"|frontooccipital|^ifo|parahippocampal|aslant|^fat$|fornix", "sagittal"),
 )
 
 # bundles that share a panel (each pattern one kind of bundle, both sides; matched like
-# VIEW_RULES), when they are all shown in the same view and do not overlap in it
+# VIEW_RULES), when they are all shown in the same view; a last element naming a view puts
+# them in it.  In a sagittal view the two sides would overlap, so each side gets its own panel.
 GROUPS = (
     (r"anteriorthalamic|^atr$", r"opticradiation|^or$"),
     (r"forcepsmajor|^fmajor$|^fma$", r"forcepsminor|^fminor$|^fmi$"),
+    (r"callosumoccipital", r"callosumorbital"),
+    (r"callosumanteriorfrontal", r"callosumposteriorparietal"),
+    (r"callosumsuperiorparietal", r"callosumsuperiorfrontal"),
+    (r"callosummotor", r"callosumtemporal", "coronal"),
+    (r"uncinate|^unc$", r"posteriorarcuate|^parc$", "sagittal"),
+    (r"fornix", r"cingulumhippocampus|^cgh$|^hcc$", "sagittal"),
 )
 
 
@@ -90,7 +97,7 @@ def _find_t1(folder):
 
 
 def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, tile=2.4, dpi=200, t1=None,
-                  views=None, pair=True, groups=GROUPS, mask=True, fontsize=11, brain_mask=None):
+                  views=None, pair=True, groups=GROUPS, mask=True, fontsize=13, brain_mask=None, titles=None):
     """PNG collage of the bundles under ``folder`` (default: all); returns its path.
 
     out      default: <folder>/<subject>_desc-mcat_collage.png
@@ -105,9 +112,13 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
     views    {bundle: "axial" | "coronal" | "sagittal"} overriding the automatic choice
     pair     left / right partners ("LeftX" / "RightX", "X_L" / "X_R") share one panel when
              their view is axial or coronal (in a sagittal view they would overlap)
-    groups   kinds of bundle that share a panel, both sides (default: ATR with the optic
-             radiation, forceps major with forceps minor): tuples of name patterns (regular
-             expressions on the lower-case name without its side); () for none
+    groups   kinds of bundle that share a panel, both sides (default GROUPS: ATR with the optic
+             radiation, the forceps, callosal segments in pairs, uncinate with posterior
+             arcuate): tuples of name patterns (regular expressions on the lower-case name
+             without its side), optionally ending in the view they share; in a sagittal view
+             each side gets its own panel; () for none
+    titles   {lower-case name without its side, letters only: title}, e.g.
+             {"superiorlongitudinaliii": "SLF"}
     cols     panels per row: each view fills rows of its own, and rows with room left are
              merged while they hold no more than ``cols`` panels together; every column is
              as wide as the widest panel, each panel centred in its cell, titles written on
@@ -167,20 +178,35 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
 
     # panels: one per bundle in its view; Left / Right partners together in axial / coronal
     views = dict(views or {})
+    titles = {re.sub(r"[^a-z]", "", k.lower()): v for k, v in (titles or {}).items()}
+
+    def title_of(base):
+        return titles.get(re.sub(r"[^a-z]", "", base.lower()), _title(base))
+
     panels, used = [], set()
-    for pats in groups or ():
-        kinds = [[n for n in dens if re.search(pt, _key(n))] for pt in pats]
-        members = [n for k in kinds for n in k]
+    for group in groups or ():
+        pats, forced = (group[:-1], group[-1]) if group[-1] in ORDER else (group, None)
+        kinds = [[n for n in dens if n not in used and re.search(pt, _key(n))] for pt in pats]
         if sum(bool(k) for k in kinds) < 2:
             continue                                     # fewer than two of the kinds found
-        vs_ = {views.get(m) or view_of(m, dens[m], aff) for m in members}
-        if len(vs_) > 1 or "sagittal" in vs_:            # different views, or overlapping sides
+        members = [n for k in kinds for n in k]
+        vs_ = {forced} if forced else {views.get(m) or view_of(m, dens[m], aff) for m in members}
+        if len(vs_) > 1:                                 # shown in different views
             continue
-        bases = list(dict.fromkeys(_title(split_side(m)[0]) for m in members))
-        sides = {split_side(m)[1] for m in members} - {None}
-        panels.append(dict(view=vs_.pop(), members=members,
-                           title=" + ".join(bases) + (" (L + R)" if sides == {"L", "R"} else "")))
-        used.update(members)
+        view = vs_.pop()
+        by_side = ([[m for m in members if split_side(m)[1] == sd] for sd in ("L", "R", None)]
+                   if view == "sagittal" else [members])  # sagittal: the sides would overlap
+        for mem in by_side:
+            if len({next(i for i, k in enumerate(kinds) if m in k) for m in mem}) < 2:
+                continue                                 # this side lacks one of the kinds
+            bases = list(dict.fromkeys(title_of(split_side(m)[0]) for m in mem))
+            first = {b.split(" ", 1)[0] for b in bases}
+            if len(first) == 1 and all(" " in b for b in bases):   # "Callosum A + Callosum B" -> "Callosum A + B"
+                bases = [bases[0]] + [b.split(" ", 1)[1] for b in bases[1:]]
+            sides = {split_side(m)[1] for m in mem} - {None}
+            suffix = " (L + R)" if sides == {"L", "R"} else f" ({sides.pop()})" if sides else ""
+            panels.append(dict(view=view, members=mem, title=" + ".join(bases) + suffix))
+            used.update(mem)
     for n in dens:
         if n in used:
             continue
@@ -194,7 +220,12 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
             members = [n]
             v = views.get(n) or view_of(n, dens[n], aff)
         used.update(members)
-        title = _title(base if len(members) == 2 else n) + (" (L + R)" if len(members) == 2 else "")
+        if len(members) == 2:
+            title = title_of(base) + " (L + R)"
+        elif side and re.sub(r"[^a-z]", "", base.lower()) in titles:
+            title = {"L": "Left ", "R": "Right "}[side] + title_of(base)
+        else:
+            title = title_of(n)
         panels.append(dict(view=v, members=members, title=title))
     panels.sort(key=lambda p: ORDER.index(p["view"]))
 

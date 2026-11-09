@@ -30,11 +30,18 @@ def main(argv=None):
                    help="keep the template's thalamic start / end ROIs (default: SynthSeg's thalami)")
     p.add_argument("--no-viz", action="store_true",
                    help="skip the collage and viewer pages (written by default)")
-    p.add_argument("--midline-tol", type=float, default=10.0,
-                   help="mm past the midline a one-sided (cross_midline=False) bundle may go before the "
-                        "other hemisphere is excluded (0: strict cut at x = 0)")
+    p.add_argument("--midline-tol", type=float, default=None,
+                   help="mm past the midline the corticospinal tracts may go before the other hemisphere "
+                        "is excluded (default: their rule, 10; 0: strict cut at x = 0); other one-sided "
+                        "bundles follow their rules in mcat.bundles (default: cut at x = 0)")
     p.add_argument("--no-midline", nargs="+", default=(), metavar="BUNDLE",
                    help="ignore cross_midline=False for these bundles (no other-hemisphere exclusion)")
+    p.add_argument("--no-fornix-exclude", action="store_true",
+                   help="the anterior thalamic radiations as pyAFQ defines them, without the default exclusion "
+                        "of the fornix / septum on the midline (MNI box x -3..3, y -28..15, z -5..22 mm)")
+    p.add_argument("--pyafq", action="store_true",
+                   help="also run pyAFQ's own pipeline (tractography, segmentation, profiles; export_all) "
+                        "on the same ParticipantAFQ, for comparison: same inputs, kwargs and derivatives")
     p.add_argument("--rois-only", action="store_true",
                    help="solve nothing: write a finished run's ROI masks (start / end / include / exclude) "
                         "and a viewer page showing them, <stem>_desc-mcat_rois.html")
@@ -42,7 +49,7 @@ def main(argv=None):
                    help="viewer pages also show each bundle's include (green) / exclude (red) ROIs")
     p.add_argument("--afq-kwargs", default="{}",
                    help="extra ParticipantAFQ arguments: JSON, or a Python expression giving a dict, "
-                        "with afd (AFQ.data.fetch), abd (AFQ.api.bundle_dict) and the "
+                        "with afd (AFQ.data.fetch), abd (AFQ.api.bundle_dict), mb (mcat.bundles) and the "
                         "AFQ.definitions image / mapping classes in scope, e.g. "
                         "'dict(bundle_info=abd.baby_bd(), brain_mask_definition=BabyBrainMask())'")
     a = p.parse_args(argv)
@@ -52,6 +59,13 @@ def main(argv=None):
     from .afq import run, write_rois
 
     kwargs = afq_kwargs(a.afq_kwargs)
+    if "bundle_info" not in kwargs:              # MCAT's bundles: pyAFQ's defaults + the HCC + the fornix
+        from .bundles import mcat_bd
+
+        # pyAFQ cannot segment the fornix (its ends are SynthSeg labels, read only by MCAT)
+        kwargs["bundle_info"] = mcat_bd(fornix=not a.pyafq)
+        if a.pyafq:
+            logging.getLogger("mcat").info("--pyafq: the fornix is left out (MCAT-only SynthSeg ends)")
     if "tracking_params" in kwargs:
         if "odf_model" not in kwargs["tracking_params"]:
             kwargs["tracking_params"]["odf_model"] = "CSD"
@@ -61,7 +75,8 @@ def main(argv=None):
     afq = ParticipantAFQ(a.dwi, a.bval, a.bvec, a.t1, a.output_dir, **kwargs)
     if a.rois_only:
         page = write_rois(afq, a.bundles, a.moments, synthseg_thalamus=not a.mni_thalamus, no_midline=a.no_midline,
-                          midline_tol=a.midline_tol, out_dir=a.out_dir)
+                          midline_tol=a.midline_tol, out_dir=a.out_dir,
+                          fornix=not a.no_fornix_exclude)
         logging.getLogger("mcat").info("ROI page: %s", page)
         return
     if a.n_proc is None:
@@ -69,7 +84,11 @@ def main(argv=None):
     run(afq, a.n_proc, a.max_mem, a.bundles, a.moments, a.tol, a.angle, not a.single_odf, viz=not a.no_viz,
         synthseg_thalamus=not a.mni_thalamus,
         max_length=a.max_length, viz_rois=a.viz_rois, no_midline=a.no_midline,
-        midline_tol=a.midline_tol, out_dir=a.out_dir, verbose=a.verbose)
+        midline_tol=a.midline_tol, out_dir=a.out_dir, verbose=a.verbose,
+        fornix=not a.no_fornix_exclude)
+    if a.pyafq:
+        logging.getLogger("mcat").info("pyAFQ's own pipeline on the same inputs -> %s", a.output_dir)
+        afq.export_all(viz=not a.no_viz)
 
 
 def afq_kwargs(text):
@@ -87,7 +106,9 @@ def afq_kwargs(text):
         import nibabel as nib
         import numpy as np
 
-        scope = dict(afd=afd, abd=abd, np=np, nib=nib)
+        import mcat.bundles as mb
+
+        scope = dict(afd=afd, abd=abd, mb=mb, np=np, nib=nib)
         scope.update({k: getattr(afm, k) for k in afm.__all__})
         scope.update({k: getattr(amp, k) for k in amp.__all__})
         try:
