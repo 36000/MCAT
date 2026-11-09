@@ -135,29 +135,53 @@ def _subject_thalamus(name, k, roi, thalamus, x, tol):
     return thalamus[side].copy()
 
 
-def bundle_specs(afq, ref_img, transient, names=None, thalamus=None, no_midline=(), midline_tol=10.0):
+def bundle_specs(afq, ref_img, transient, names=None, thalamus=None, no_midline=(), midline_tol=None,
+                 fornix=True):
     """bundle_specs_iter as a list (every bundle's ROIs at once)."""
-    return list(bundle_specs_iter(afq, ref_img, transient, names, thalamus, no_midline, midline_tol))
+    return list(bundle_specs_iter(afq, ref_img, transient, names, thalamus, no_midline, midline_tol, fornix))
 
 
-def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_midline=(), midline_tol=10.0):
-    """MCAT bundle specs from pyAFQ's bundle dictionary: include / exclude ROIs (sealed), start /
-    end ROIs grown by pyAFQ's ``dist_to_atlas``, and the other hemisphere excluded for bundles
-    that may not cross the midline.  Other pyAFQ criteria (curvature, length, cleaning) are
-    streamline-based and do not apply.  Yields one bundle at a time, each warped only when
-    it is asked for, so a run holds the ROIs of the bundles it is solving and no others.
+def mni_box(box, bd, mapping, ref_img):
+    """An MNI box {x: (lo, hi), y: ..., z: ...} (mm) on ``ref_img``'s grid, warped as pyAFQ warps
+    its template ROIs."""
+    import AFQ.utils.volume as auv
+
+    tpl = bd.resample_to
+    tpl = nib.load(tpl) if isinstance(tpl, (str, Path)) else tpl
+    xyz = nib.affines.apply_affine(tpl.affine, np.indices(tpl.shape[:3]).reshape(3, -1).T)
+    m = np.ones(len(xyz), bool)
+    for i, k in enumerate("xyz"):
+        lo, hi = box[k]
+        m &= (xyz[:, i] >= lo) & (xyz[:, i] <= hi)
+    warped = auv.transform_roi(m.reshape(tpl.shape[:3]).astype(np.float64), mapping, True)
+    return _on_grid(nib.Nifti1Image(np.asarray(warped, np.float32), ref_img.affine), ref_img, order=0) > 0
+
+
+def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_midline=(), midline_tol=None,
+                      fornix=True, hypo_file=None):
+    """MCAT bundle specs from pyAFQ's bundle dictionary and MCAT's rules (mcat.bundles): include /
+    exclude ROIs (sealed), start / end ROIs grown by pyAFQ's ``dist_to_atlas``, and the other
+    hemisphere excluded for bundles that may not cross the midline.  Other pyAFQ criteria
+    (curvature, length, cleaning) are streamline-based and do not apply.  Yields one bundle at
+    a time, each warped only when it is asked for, so a run holds the ROIs of the bundles it is
+    solving and no others.
 
     no_midline  bundle names whose cross_midline=False is ignored (no other-hemisphere exclusion)
-    midline_tol mm past the midline (world x = 0) a cross_midline=False bundle may still go before
-                the other hemisphere is excluded.  pyAFQ checks only 20 points per streamline, so it
-                forgives short dips across; a voxel-exact cut at 0 can sever bundles that run
-                next to the midline (the CST in the brainstem)
+    midline_tol overrides the midline_tol rule of the bundles that have one (the corticospinal
+                tracts); None: the rules' own
+    fornix      False: drop the fornix box (mcat.bundles.FORNIX_BOX_MNI) from the exclusions
+                (the anterior thalamic radiations as pyAFQ defines them)
+    hypo_file   where SynthSeg with the hypothalamus is kept, when a bundle's SynthSeg ROIs use
+                the hypothalamus (the fornix) and pyAFQ's SynthSeg lacks it (_synthseg_on_grid)
     thalamus    {"left": mask, "right": mask} on ``ref_img``'s grid (SynthSeg's): a start / end
                 ROI that is the template's thalamus -- at least half of it within ``dist_to_atlas``
                 of a thalamus, or its centre inside one -- is replaced by the subject's thalamus
-                on its side.  The thalamus is grey matter, where walkers end, so a template
-                thalamus warped a few mm off would make most real endings invalid."""
+                on its side (unless the bundle's rule says thalamus="template").  The thalamus
+                is grey matter, where walkers end, so a template thalamus warped a few mm off
+                would make most real endings invalid."""
     from scipy.ndimage import distance_transform_edt
+
+    from .bundles import FORNIX_BOX_MNI, rules, synthseg_values
 
     bd, mapping = afq.export("bundle_dict"), afq.export("mapping")
     dist = afq.export("segmentation_params").get("dist_to_atlas", 4)
@@ -165,36 +189,130 @@ def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_mid
     tol = int(dist / np.mean(np.diag(np.linalg.cholesky(R.T @ R))))   # pyAFQ's tolerance_mm_to_vox
     x = nib.affines.apply_affine(ref_img.affine, np.indices(transient.shape).reshape(3, -1).T)[:, 0]
     x = x.reshape(transient.shape)
+    boxes, seg, seg_hypo = {}, None, False
+
+    def box(b):
+        key = tuple(sorted((k, tuple(v)) for k, v in b.items()))
+        if key not in boxes:
+            boxes[key] = seal_26(mni_box(b, bd, mapping, ref_img))
+            log.info("MNI box %s: %d voxels on this grid", dict(b), int(boxes[key].sum()))
+        return boxes[key]
+
     for name in (names or list(bd)):
+        r = rules(bd, name)
         rois = bd.transform_rois(name, mapping, ref_img)
         arr = lambda img: _on_grid(img, ref_img, order=0) > 0  # noqa: E731
         spec = dict(name=name, include=[seal_26(arr(m)) for m in rois.get("include", [])])
+        spec["include"] += [box(b) for b in r["include_mni_boxes"]]
         exc = [seal_26(arr(m)) for m in rois.get("exclude", [])]
+        exc += [box(b) for b in r["exclude_mni_boxes"] if fornix or dict(b) != FORNIX_BOX_MNI]
         spec["exclude_rois"] = np.any(exc, axis=0) if exc else None      # without the hemisphere (for display)
         for k in ("start", "end"):
-            if k in rois:
+            labels = r[f"{k}_synthseg"]
+            if labels:
+                values = synthseg_values(labels)
+                hypo = bool(set(values) & set(HYPOTHALAMUS))
+                if seg is None or (hypo and not seg_hypo):
+                    seg = _synthseg_on_grid(afq, ref_img, hypothalamus=hypo, hypo_file=hypo_file)
+                    seg_hypo = bool(np.isin(seg, HYPOTHALAMUS).any())
+                roi = np.isin(seg, values)
+                if not roi.any():
+                    log.warning("%s %s: SynthSeg labels %s are empty on this grid", name, k, labels)
+                log.info("%s %s: SynthSeg %s (%d voxels)", name, k, ", ".join(map(str, labels)), int(roi.sum()))
+            elif k in rois:
                 roi = arr(rois[k])
-                if thalamus is not None and roi.any():
+                if thalamus is not None and r["thalamus"] == "synthseg" and roi.any():
                     roi = _subject_thalamus(name, k, roi, thalamus, x, tol)
-                spec[k] = distance_transform_edt(~roi) - 0.5 <= tol   # pyAFQ's endpoint test
+            else:
+                continue
+            spec[k] = distance_transform_edt(~roi) - 0.5 <= tol   # pyAFQ's endpoint test
         if bd[name].get("cross_midline") is False and name in no_midline:
             log.info("%s: no midline exclusion (no_midline)", name)
         elif bd[name].get("cross_midline") is False:
-            own = np.concatenate([np.atleast_1d(x[m]) for m in spec["include"] +
-                                  [spec[k] for k in ("start", "end") if k in spec]])
-            exc.append(x > midline_tol if own.mean() < 0 else x < -midline_tol)
+            t = r["midline_tol"] if midline_tol is None or not r["midline_tol"] else midline_tol
+            left = _is_left(name, spec, x)
+            exc.append(x > t if left else x < -t)
+            log.info("%s: kept to the %s hemisphere (other side excluded past %g mm)", name,
+                     "left" if left else "right", t)
         spec["exclude"] = np.any(exc, axis=0) if exc else None
         yield spec
+
+
+HYPOTHALAMUS = (102, 103)     # SynthSegLabels.LEFT_ / RIGHT_HYPOTHALAMUS
+
+
+def _is_left(name, spec, x):
+    """Which hemisphere a one-sided bundle belongs to: its name ("Left ..." / "Right ..."), else
+    its include ROIs, else its start / end ROIs, each ROI counted once (its centre).  Not
+    pooled voxels: a big midline end ROI shared by both sides (the corticospinal tracts'
+    brainstem) would outvote the waypoints and put a bundle on the wrong side."""
+    n = name.lower()
+    if n.startswith("left") or n.endswith("_l") or n.endswith(" l"):
+        return True
+    if n.startswith("right") or n.endswith("_r") or n.endswith(" r"):
+        return False
+    for rois in (spec["include"], [spec[k] for k in ("start", "end") if spec.get(k) is not None]):
+        c = [x[m].mean() for m in rois if m.any()]
+        if c:
+            return float(np.mean(c)) < 0
+    return True
+
+
+def _synthseg_on_grid(afq, ref_img, hypothalamus=False, hypo_file=None):
+    """pyAFQ's SynthSeg labels on ``ref_img``'s grid.
+
+    hypothalamus  the labels must include SynthSeg's hypothalamus (102 / 103), which pyAFQ's own
+                  SynthSeg run leaves out: if pyAFQ's segmentation lacks it, SynthSeg is rerun on
+                  pyAFQ's T1 with the hypothalamus model (AFQ.nn.synthseg.run_synthseg,
+                  parc_hypothalamus=True) and written to ``hypo_file`` (reused next time if it has
+                  the hypothalamus).  pyAFQ's own segmentation and tissue are left as they are."""
+    seg = afq.export("synthseg_model")
+    seg = nib.load(seg) if isinstance(seg, str) else seg
+    if hypothalamus and not _has_hypothalamus(seg):
+        seg = _synthseg_hypothalamus(afq, hypo_file)
+    lab = np.rint(_on_grid(seg, ref_img, order=0)).astype(np.int32)
+    return lab[..., 0] if lab.ndim == 4 else lab
+
+
+def _has_hypothalamus(img):
+    return bool(np.isin(np.asarray(img.dataobj), HYPOTHALAMUS).any())
+
+
+def _synthseg_hypothalamus(afq, path=None):
+    """SynthSeg 2 + its hypothalamus model on pyAFQ's T1 (``path``: reused / written)."""
+    if path is not None and Path(path).exists():
+        img = nib.load(path)
+        if _has_hypothalamus(img):
+            log.info("SynthSeg with hypothalamus: %s", path)
+            return img
+        log.warning("%s has no hypothalamus labels; rerunning SynthSeg", path)
+    from AFQ.nn.synthseg import run_synthseg
+    from AFQ.tasks.utils import check_onnxruntime
+
+    ort = check_onnxruntime("SynthSeg 2.0 (hypothalamus)", "Or give the fornix's hypothalamic end another ROI.")
+    try:
+        onnx_kwargs = afq.export("onnx_kwargs")
+    except Exception:  # noqa: BLE001  (older pyAFQ)
+        onnx_kwargs = {}
+    t1 = afq.kwargs["t1_file"]              # an input, not an export
+    log.info("pyAFQ's SynthSeg has no hypothalamus: rerunning SynthSeg with the hypothalamus model on %s", t1)
+    t0 = time.time()
+    img = run_synthseg(ort, nib.load(t1), "synthseg2", onnx_kwargs, parc_hypothalamus=True)
+    img = nib.Nifti1Image(np.asarray(img.dataobj).astype(np.int16), img.affine)
+    if not _has_hypothalamus(img):
+        log.warning("SynthSeg's hypothalamus model found no hypothalamus")
+    if path is not None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        nib.save(img, path)
+        log.info("SynthSeg with hypothalamus written to %s (%.0fs)", path, time.time() - t0)
+    return img
 
 
 def _subject_thalami(afq, sh_img):
     """{"left", "right"} SynthSeg thalami on the fODF grid."""
     from AFQ.nn.synthseg import SynthSegLabels
 
-    seg = afq.export("synthseg_model")
-    seg = nib.load(seg) if isinstance(seg, str) else seg
-    lab = np.rint(_on_grid(seg, sh_img, order=0)).astype(np.int32)
-    lab = lab[..., 0] if lab.ndim == 4 else lab
+    lab = _synthseg_on_grid(afq, sh_img)
     return {"left": lab == int(SynthSegLabels.LEFT_THALAMUS), "right": lab == int(SynthSegLabels.RIGHT_THALAMUS)}
 
 
@@ -210,12 +328,14 @@ def _thalami_if_synthseg(afq, sh_img, synthseg_thalamus):
     return _subject_thalami(afq, sh_img) if use else None
 
 
-def roi_specs(afq, sh_img, transient, stem, bundles=None, thalamus=None, no_midline=(), midline_tol=10.0):
+def roi_specs(afq, sh_img, transient, stem, bundles=None, thalamus=None, no_midline=(), midline_tol=None,
+              fornix=True):
     """bundle_specs_iter, writing each bundle's ROI masks as it goes: start / end, the include
     ROIs (labelled 1, 2, ... in pyAFQ's order) and the exclude ROIs (without the other
     hemisphere, which cross_midline=False bundles exclude too)."""
     for spec in bundle_specs_iter(afq, sh_img, transient, bundles, thalamus=thalamus, no_midline=no_midline,
-                                  midline_tol=midline_tol):
+                                  midline_tol=midline_tol, fornix=fornix,
+                                  hypo_file=f"{stem}_model-synthseg2hypo_dseg.nii.gz"):
         b = f"{stem}_bundle-{re.sub(r'[^A-Za-z0-9]', '', spec['name'])}"
         save = lambda m, desc: nib.save(nib.Nifti1Image(np.asarray(m, np.uint8), sh_img.affine),  # noqa: E731
                                         f"{b}_desc-{desc}_mask.nii.gz")
@@ -234,7 +354,7 @@ def roi_specs(afq, sh_img, transient, stem, bundles=None, thalamus=None, no_midl
 
 
 def write_rois(afq, bundles=None, moments=False, synthseg_thalamus=True, no_midline=(), page=True,
-               midline_tol=10.0, out_dir=None):
+               midline_tol=None, out_dir=None, fornix=True):
     """Write the ROI masks of a finished run's bundles (start / end / include / exclude) without
     solving anything, and a viewer page showing them (bundles with no streamlines included).
     Returns the page's path (or None)."""
@@ -252,7 +372,7 @@ def write_rois(afq, bundles=None, moments=False, synthseg_thalamus=True, no_midl
         log.warning("no run outputs for %s: their ROIs are not written",
                     [n for n in names if n not in run_names])
     thal = _thalami_if_synthseg(afq, sh_img, synthseg_thalamus)
-    for spec in roi_specs(afq, sh_img, transient, stem, run_names, thal, no_midline, midline_tol):
+    for spec in roi_specs(afq, sh_img, transient, stem, run_names, thal, no_midline, midline_tol, fornix):
         log.info("%s: ROI masks written", spec["name"])
     if not page or not run_names:
         return None
@@ -381,7 +501,7 @@ def _bytes(x):
 
 def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angle=35.0, double_odf=True,
         cores=True, viz=True, synthseg_thalamus=True, max_length=250.0, viz_rois=False,
-        no_midline=(), midline_tol=10.0, out_dir=None, verbose=False, flux=False):
+        no_midline=(), midline_tol=None, out_dir=None, verbose=False, fornix=True, flux=False):
     """Segment pyAFQ's bundles with MCAT.
 
     afq         ``ParticipantAFQ`` or ``GroupAFQ`` (every participant in turn)
@@ -401,8 +521,9 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
                 and the fODF (mcat.viewer.save_html).  Pages load NiiVue from a CDN.
     viz_rois    the viewer pages also show each bundle's include / exclude ROIs
     no_midline  bundle names whose cross_midline=False is ignored (no other-hemisphere exclusion)
-    midline_tol mm past the midline a one-sided bundle may go before the other hemisphere is
-                excluded (default 10; 0: a strict cut at x = 0)
+    midline_tol mm past the midline the corticospinal tracts may go before the other hemisphere
+                is excluded (default: their rule, 10; 0: a strict cut); every other one-sided bundle
+                follows its own rule (mcat.bundles; default a strict cut at x = 0)
     max_length  soft maximum streamline length (mm; 0: none).  Before any bundle is solved,
                 direction states from which most walkers would still be walking after this
                 long -- traps where they circle, unable to turn out under the angle limit --
@@ -410,6 +531,8 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
                 survival per voxel is written to <stem>_desc-overlength_map.nii.gz
     out_dir     write MCAT's outputs here instead of <pyAFQ output_dir>/mcat (mcat-moments);
                 pyAFQ's derivatives are only read.  For a GroupAFQ: <out_dir>/sub-<s>/ses-<t>
+    fornix      the anterior thalamic radiations exclude the fornix / septum on the midline
+                (FORNIX_BOX_MNI; False: as pyAFQ defines them)
     verbose     log timing inside the solves (ms per power step: matrix product / mask and
                 sum); the time per stage is logged at the end anyway
     synthseg_thalamus  with pyAFQ's SynthSeg tissue (pve unset or "synthseg"), a template start / end
@@ -424,7 +547,7 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
     if hasattr(afq, "pAFQ_list"):
         kw = dict(cores=cores, viz=viz, synthseg_thalamus=synthseg_thalamus, max_length=max_length,
                   viz_rois=viz_rois, no_midline=no_midline, midline_tol=midline_tol,
-                  verbose=verbose, flux=flux)
+                  verbose=verbose, fornix=fornix, flux=flux)
         return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf, **kw,
                                         out_dir=out_dir and str(Path(out_dir) / f"sub-{s}" / f"ses-{t}"))
                 for s, t, p in zip(afq.valid_sub_list, afq.valid_ses_list, afq.pAFQ_list)}
@@ -448,7 +571,7 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
     def specs():
         # each bundle's ROIs warped just before its group is solved, its ROI masks written then
         # (the solve keeps what it needs, so the ROIs can go)
-        yield from roi_specs(afq, sh_img, transient, stem, bundles, thal, no_midline, midline_tol)
+        yield from roi_specs(afq, sh_img, transient, stem, bundles, thal, no_midline, midline_tol, fornix)
 
     cfg = ChainConfig(angle=angle, double_odf=double_odf, moments=moments)
     with clock("fODF load"):
@@ -491,9 +614,9 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
         if res.fields is not None:
             f26 = res.fields.edge_flux()
             maps["throughflux"] = (chain.to_volume(res.fields.through_flux(f26)), "map")
-            flux = np.zeros(chain.shape + (26,), np.float32)
-            flux[tuple((np.stack(np.unravel_index(chain.t_lin, chain.pshape), 1) - 1).T)] = f26
-            maps["edgeflux"] = (flux, "map")
+            f26vol = np.zeros(chain.shape + (26,), np.float32)
+            f26vol[tuple((np.stack(np.unravel_index(chain.t_lin, chain.pshape), 1) - 1).T)] = f26
+            maps["edgeflux"] = (f26vol, "map")
             res.info["flux_conservation"] = {k: v for k, v in res.fields.conservation(f26).items()
                                              if not isinstance(v, np.ndarray)}
             res.fields = None
