@@ -2,13 +2,15 @@
 ``ParticipantAFQ`` (or each participant of a ``GroupAFQ``): the fODF pyAFQ tracks on, the
 tissue PVE and brain mask, the white/grey-matter interface (seeds), the bundle
 definitions, and their ROIs warped to the subject.  Outputs go to ``<output_dir>/mcat``
-(``mcat-moments`` with spatial moments), next to pyAFQ's own.
+(``mcat-moments`` with spatial moments), next to pyAFQ's own, or to ``out_dir`` (pyAFQ's
+derivatives are then only read).
 """
 from __future__ import annotations
 
 import csv
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -18,7 +20,7 @@ import numpy as np
 
 from .chain import ABSORB_CLASSES, Chain, ChainConfig
 from .geometry import visitation_odf
-from .solve import overlength_states, prepare_launches, segment_bundles
+from .solve import Clock, overlength_states, prepare_launches, segment_bundles
 
 log = logging.getLogger("mcat")
 WM_THRESHOLD = 0.4   # pyAFQ's tracker stops where WM PVE <= gm_threshold (0.4)
@@ -232,7 +234,7 @@ def roi_specs(afq, sh_img, transient, stem, bundles=None, thalamus=None, no_midl
 
 
 def write_rois(afq, bundles=None, moments=False, synthseg_thalamus=True, no_midline=(), page=True,
-               midline_tol=10.0):
+               midline_tol=10.0, out_dir=None):
     """Write the ROI masks of a finished run's bundles (start / end / include / exclude) without
     solving anything, and a viewer page showing them (bundles with no streamlines included).
     Returns the page's path (or None)."""
@@ -241,7 +243,7 @@ def write_rois(afq, bundles=None, moments=False, synthseg_thalamus=True, no_midl
 
     sh_img = nib.load(afq.export(f"{afq.export('tracking_params')['odf_model'].lower()}_params"))
     transient, _, _ = tissue_labels(sh_img, nib.load(afq.export("pve_internal")), nib.load(afq.export("brain_mask")))
-    out = Path(afq.kwargs["output_dir"]) / ("mcat-moments" if moments else "mcat")
+    out = mcat_dir(afq, moments, out_dir)
     stem = str(out / Path(afq.kwargs["base_fname"]).name)
     done = bundle_files(out)
     names = list(bundles or afq.export("bundle_dict"))
@@ -282,6 +284,92 @@ def visualize(out, stem, bundles, fodf=None, t1=None, rois=False):
             log.warning("%s not written: %s", what, err)
 
 
+def mcat_dir(afq, moments=False, out_dir=None):
+    """Where MCAT's outputs go: ``out_dir`` if given, else <pyAFQ output_dir>/mcat (mcat-moments)."""
+    if out_dir:
+        return Path(out_dir)
+    return Path(afq.kwargs["output_dir"]) / ("mcat-moments" if moments else "mcat")
+
+
+GiB = 1024 ** 3
+AUTO_FRACTION, AUTO_HEADROOM = 0.8, 10 * GiB    # max_mem="auto": min(80% of the limit, limit - 10 GB)
+
+
+def memory_limit():
+    """(bytes this process may use, where that came from): the smallest of its cgroup's
+    memory limits (what SLURM and containers enforce), SLURM's request, and physical memory."""
+    found = []
+    try:
+        for line in open("/proc/self/cgroup"):
+            hid, ctrl, path = line.rstrip("\n").split(":", 2)
+            if hid == "0" and ctrl == "":                       # cgroup v2
+                files = ["memory.max"]
+                root = "/sys/fs/cgroup"
+            elif "memory" in ctrl.split(","):                   # cgroup v1
+                files = ["memory.limit_in_bytes"]
+                root = "/sys/fs/cgroup/memory"
+            else:
+                continue
+            p = Path(path)
+            for d in [p, *p.parents]:                          # the job's cgroup and its parents
+                for f in files:
+                    try:
+                        v = (Path(root) / d.relative_to("/") / f).read_text().strip()
+                    except OSError:
+                        continue
+                    if v.isdigit() and int(v) < 1 << 60:
+                        found.append((int(v), f"cgroup {d}"))
+    except OSError:
+        pass
+    env = os.environ
+    if env.get("SLURM_MEM_PER_NODE", "").isdigit():
+        found.append((int(env["SLURM_MEM_PER_NODE"]) * 1024 ** 2, "SLURM_MEM_PER_NODE"))
+    elif env.get("SLURM_MEM_PER_CPU", "").isdigit():
+        cpus = env.get("SLURM_CPUS_ON_NODE") or env.get("SLURM_CPUS_PER_TASK") or "1"
+        if cpus.isdigit():
+            found.append((int(env["SLURM_MEM_PER_CPU"]) * 1024 ** 2 * int(cpus), "SLURM_MEM_PER_CPU"))
+    try:
+        found.append((os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"), "physical memory"))
+    except (ValueError, OSError, AttributeError):
+        pass
+    return min(found) if found else (None, "unknown")
+
+
+def memory_in_use():
+    """Resident memory of this process (bytes; 0 if unknown)."""
+    try:
+        for line in open("/proc/self/status"):
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return 0
+
+
+def _budget(max_mem, chain, launches):
+    """max_mem as segment_bundles takes it (bytes for the chain, the launches and the solve
+    columns).  "auto": min(80% of the memory limit, limit - 10 GB), at least half the limit,
+    less what the process already holds besides the chain and the launches (pyAFQ's data,
+    the fODF, ...).  An explicit size is used as given, with a warning above the limit."""
+    limit, src = memory_limit()
+    held = memory_in_use()
+    other = max(held - chain.nbytes - launches.nbytes, 0)
+    if isinstance(max_mem, str) and max_mem.strip().lower() == "auto":
+        if limit is None:
+            raise ValueError("max_mem='auto': cannot tell this machine's memory limit; give a size")
+        total = max(min(AUTO_FRACTION * limit, limit - AUTO_HEADROOM), 0.5 * limit)
+        budget = total - other
+        log.info("memory: limit %.1f GB (%s), MCAT may use %.1f GB; %.1f GB already held besides the chain "
+                 "(%.1f GB) and launches (%.1f GB) -> %.1f GB budget", limit / GiB, src, total / GiB,
+                 other / GiB, chain.nbytes / GiB, launches.nbytes / GiB, budget / GiB)
+        return budget
+    b = _bytes(max_mem)
+    if limit is not None and b + other > limit:
+        log.warning("max_mem %.1f GB plus the %.1f GB already held exceeds this job's memory limit "
+                    "(%.1f GB, %s): it may be killed; try max_mem='auto'", b / GiB, other / GiB, limit / GiB, src)
+    return b
+
+
 def _bytes(x):
     if isinstance(x, str):
         m = re.fullmatch(r"\s*([\d.]+)\s*([kmgt]?)b?\s*", x.lower())
@@ -291,14 +379,16 @@ def _bytes(x):
     return float(x)
 
 
-def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0, double_odf=True,
+def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angle=35.0, double_odf=True,
         cores=True, viz=True, synthseg_thalamus=True, max_length=250.0, viz_rois=False,
-        no_midline=(), midline_tol=10.0, flux=False):
+        no_midline=(), midline_tol=10.0, out_dir=None, verbose=False, flux=False):
     """Segment pyAFQ's bundles with MCAT.
 
     afq         ``ParticipantAFQ`` or ``GroupAFQ`` (every participant in turn)
     n_proc      threads
-    max_mem     memory budget, bytes or e.g. "16GB": sets how many bundles share each solve
+    max_mem     memory budget, bytes, e.g. "16GB", or "auto" (default): sets how many bundles
+                share each solve.  "auto" reads the job's limit (cgroup / SLURM / physical),
+                keeps min(80%, limit - 10 GB) of it and subtracts what is already held
     bundles     pyAFQ bundle names (default: all in the bundle dictionary)
     moments     spatial first moments (narrower, more accurate bundles; ~5x slower)
     tol         remaining walker mass at which the solves stop (relative)
@@ -318,6 +408,10 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
                 long -- traps where they circle, unable to turn out under the angle limit --
                 become invalid ends for every bundle (mcat.solve.overlength_states); the
                 survival per voxel is written to <stem>_desc-overlength_map.nii.gz
+    out_dir     write MCAT's outputs here instead of <pyAFQ output_dir>/mcat (mcat-moments);
+                pyAFQ's derivatives are only read.  For a GroupAFQ: <out_dir>/sub-<s>/ses-<t>
+    verbose     log timing inside the solves (ms per power step: matrix product / mask and
+                sum); the time per stage is logged at the end anyway
     synthseg_thalamus  with pyAFQ's SynthSeg tissue (pve unset or "synthseg"), a template start / end
                 ROI that is the thalamus is replaced by SynthSeg's thalamus (see bundle_specs)
     flux        also write each bundle's edge flux (mcat.fields): the expected streamline steps
@@ -329,21 +423,27 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
 
     if hasattr(afq, "pAFQ_list"):
         kw = dict(cores=cores, viz=viz, synthseg_thalamus=synthseg_thalamus, max_length=max_length,
-                  viz_rois=viz_rois, no_midline=no_midline, midline_tol=midline_tol, flux=flux)
-        return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf, **kw)
+                  viz_rois=viz_rois, no_midline=no_midline, midline_tol=midline_tol,
+                  verbose=verbose, flux=flux)
+        return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf, **kw,
+                                        out_dir=out_dir and str(Path(out_dir) / f"sub-{s}" / f"ses-{t}"))
                 for s, t, p in zip(afq.valid_sub_list, afq.valid_ses_list, afq.pAFQ_list)}
     numba.set_num_threads(max(1, min(int(n_proc), numba.config.NUMBA_NUM_THREADS)))
     t0 = time.time()
-    sh_path = afq.export(f"{afq.export('tracking_params')['odf_model'].lower()}_params")
-    sh_img = nib.load(sh_path)
-    transient, absorb, dseg = tissue_labels(sh_img, nib.load(afq.export("pve_internal")),
-                                            nib.load(afq.export("brain_mask")))
-    out = Path(afq.kwargs["output_dir"]) / ("mcat-moments" if moments else "mcat")
+    clock = Clock()
+    with clock("pyAFQ inputs"):
+        sh_path = afq.export(f"{afq.export('tracking_params')['odf_model'].lower()}_params")
+        sh_img = nib.load(sh_path)
+        pve_img, bm_img = nib.load(afq.export("pve_internal")), nib.load(afq.export("brain_mask"))
+    with clock("tissue labels"):
+        transient, absorb, dseg = tissue_labels(sh_img, pve_img, bm_img)
+    out = mcat_dir(afq, moments, out_dir)
     out.mkdir(parents=True, exist_ok=True)
     stem = str(out / Path(afq.kwargs["base_fname"]).name)
     nib.save(nib.Nifti1Image(dseg, sh_img.affine), f"{stem}_desc-mcat_dseg.nii.gz")
     # pyAFQ's tissue from SynthSeg: its thalami stand in for the template's thalamic ROIs
-    thal = _thalami_if_synthseg(afq, sh_img, synthseg_thalamus)
+    with clock("pyAFQ inputs"):
+        thal = _thalami_if_synthseg(afq, sh_img, synthseg_thalamus)
 
     def specs():
         # each bundle's ROIs warped just before its group is solved, its ROI masks written then
@@ -351,10 +451,14 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
         yield from roi_specs(afq, sh_img, transient, stem, bundles, thal, no_midline, midline_tol)
 
     cfg = ChainConfig(angle=angle, double_odf=double_odf, moments=moments)
-    sh = np.asarray(sh_img.dataobj, np.float32)
-    chain = Chain.build(sh, sh_img.header.get_zooms()[:3], transient, absorb, cfg,
-                        cache=f"{stem}_desc-chain_cache.npz")
-    seeds = np.argwhere((_on_grid(nib.load(afq.export("wm_gm_interface")), sh_img, 0) > 0) & transient)
+    with clock("fODF load"):
+        sh = np.asarray(sh_img.dataobj, np.float32)
+    with clock("chain build / cache"):
+        chain = Chain.build(sh, sh_img.header.get_zooms()[:3], transient, absorb, cfg,
+                            cache=f"{stem}_desc-chain_cache.npz")
+    with clock("pyAFQ inputs"):
+        seeds = np.argwhere((_on_grid(nib.load(afq.export("wm_gm_interface")), sh_img, 0) > 0) & transient)
+    t_ol = time.perf_counter()
     if max_length and max_length > 0:
         t1_ = time.time()
         kill, surv, T = overlength_states(chain, max_length, sh_img.header.get_zooms()[:3])
@@ -364,7 +468,9 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
         log.info("soft maximum streamline length %.0f mm (%d steps): %d of %d direction states, in %d voxels, "
                  "keep most walkers longer than that and end them invalidly (%.0fs)", max_length, T,
                  kill.sum(), kill.size, int(kill.reshape(-1, chain.nb).any(1).sum()), time.time() - t1_)
-    launches = prepare_launches(chain, seeds)
+    clock.add("soft max length", time.perf_counter() - t_ol)
+    with clock("seed launches (prepare)"):
+        launches = prepare_launches(chain, seeds)
     chain.release_pmfs()
     rows = []
 
@@ -422,20 +528,25 @@ def run(afq, n_proc, max_mem, bundles=None, moments=False, tol=1e-10, angle=35.0
         log.warning("%s solve of %s did not finish: the mass left (%.1e of the start) is mapped in %s; "
                     "most of it at (%.0f, %.0f, %.0f) mm", what, ", ".join(names), vol.sum(), f, *peak)
 
-    results = segment_bundles(chain, specs(), launches, tol=tol, max_mem=_bytes(max_mem), on_result=write,
-                              on_trapped=trapped, keep_fields=flux)
+    results = segment_bundles(chain, specs(), launches, tol=tol, max_mem=_budget(max_mem, chain, launches),
+                              on_result=write,
+                               on_trapped=trapped, verbose=verbose, clock=clock, keep_fields=flux)
     with open(f"{stem}_desc-mcat_table.tsv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t")
         w.writeheader()
         w.writerows(rows)
     if cores:
         from .core import write_cores
-        write_cores(out)
+        with clock("cores"):
+            write_cores(out)
+    t_viz = time.perf_counter()
     if viz:
         try:
             t1 = afq.export("t1_masked")
         except Exception:  # noqa: BLE001 -- the collage falls back to the tissue labels
             t1 = None
         visualize(out, stem, [re.sub(r"[^A-Za-z0-9]", "", n) for n in results], sh_path, t1=t1, rois=viz_rois)
+        clock.add("viz", time.perf_counter() - t_viz)
+    clock.report("MCAT time per stage", time.time() - t0)
     log.info("MCAT: %d bundles in %.0fs -> %s", len(results), time.time() - t0, out)
     return results
