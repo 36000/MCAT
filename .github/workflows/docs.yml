@@ -1,0 +1,86 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # MITTENS v2 (mittens-dmri) builds from GitHub with Rust
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install MCAT with the docs and test extras
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m pip install -e ".[docs,test]"
+
+      # rendered animations and the phantom's chains are reused while the scripts and
+      # MCAT's source are unchanged (the extension also checks its own hashes)
+      - uses: actions/cache@v4
+        with:
+          path: |
+            docs/build/generated
+            docs/build/cache
+          key: docs-anim-${{ hashFiles('docs/animations/**', 'src/mcat/**') }}
+          restore-keys: docs-anim-
+
+      - name: Build the documentation
+        env:
+          MCAT_DOCS_JOBS: "4"
+        run: sphinx-build -W --keep-going -b html docs/source docs/build/html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/build/html
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  linkcheck:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m pip install -e ".[docs]"
+      - name: Check external links
+        env:
+          MCAT_DOCS_ANIMATIONS: skip
+        run: sphinx-build -b linkcheck docs/source docs/build/linkcheck
