@@ -7,8 +7,8 @@ beyond that is a rule, kept as data in one place:
 * ``MCAT_RULES`` -- rules for pyAFQ's own bundles, by name, applied to whichever bundle
   dictionary a run uses (so a plain pyAFQ dictionary gets them too);
 * an entry's ``"mcat"`` sub-dictionary -- rules carried by the bundle itself, which override
-  ``MCAT_RULES``.  pyAFQ ignores this key (its segmentation only reads its own criteria), so a
-  dictionary with MCAT rules still works in pyAFQ.
+  ``MCAT_RULES``.  Newer pyAFQ rejects unknown criteria, so pyafq_bd(bd) strips this key
+  before pyAFQ's own recognition.
 
 Rules (``RULE_DEFAULTS`` hold for every bundle that does not set them):
 
@@ -19,6 +19,8 @@ Rules (``RULE_DEFAULTS`` hold for every bundle that does not set them):
     include_mni_boxes  the same, as inclusion ROIs
     start_synthseg     start / end ROIs as SynthSeg labels of the subject (AFQ.nn.synthseg
     end_synthseg       SynthSegLabels names or values); they replace any template start / end
+    synthseg_tol_mm    how far start / end ROIs given as SynthSeg labels are grown, mm (None: pyAFQ's
+                       dist_to_atlas, 4 mm by default, as for template ROIs; 0: the labels as they are)
     thalamus           "synthseg": a start / end ROI that is the template's thalamus becomes the
                        subject's SynthSeg thalamus (when pyAFQ's tissue comes from SynthSeg);
                        "template": keep it
@@ -26,7 +28,9 @@ Rules (``RULE_DEFAULTS`` hold for every bundle that does not set them):
 ``mcat_bd()`` is MCAT's default dictionary: pyAFQ's defaults (default + SLF + callosal) and
 the hippocampal cingulum and the fornix (MCAT only: its ends are SynthSeg labels, which
 pyAFQ's segmentation does not read; ``fornix=False`` leaves it out; pyafq_bd(bd) gives the
-dictionary pyAFQ's own recognition accepts).
+dictionary pyAFQ's own recognition accepts).  ``mcat_bd(synthseg_cst=True)`` (``--synthseg-cst``)
+swaps pyAFQ's corticospinal tracts for ones defined by SynthSeg endpoints only
+(synthseg_cst_bd).
 """
 from __future__ import annotations
 
@@ -41,7 +45,7 @@ FORNIX_BOX_MNI = dict(x=(-3.0, 3.0), y=(-28.0, 15.0), z=(-5.0, 22.0))
 FORNIX_BODY_MNI = dict(x=(-4.0, 4.0), y=(-25.0, -5.0), z=(8.0, 22.0))
 
 RULE_DEFAULTS = dict(midline_tol=0.0, exclude_mni_boxes=(), include_mni_boxes=(), start_synthseg=None,
-                     end_synthseg=None, thalamus="synthseg")
+                     end_synthseg=None, synthseg_tol_mm=None, thalamus="synthseg")
 
 MCAT_RULES = {
     # next to the midline in the brainstem: a voxel-exact cut severs it (pyAFQ checks only 20
@@ -129,9 +133,45 @@ def pyafq_bd(bd):
     return out
 
 
-def mcat_bd(fornix=True):
-    """MCAT's default bundle dictionary (see the module docstring)."""
+SYNTHSEG_CST_CORTEX = ("PRECENTRAL", "PARACENTRAL", "POSTCENTRAL")   # the central (sensorimotor) cortex
+
+
+def synthseg_cst_labels(side):
+    """(start, end) SynthSeg labels of the SynthSeg corticospinal tract on ``side``: the
+    precentral, paracentral and postcentral cortex (SYNTHSEG_CST_CORTEX, SynthSeg's cortical
+    parcellation), and the brainstem."""
+    h = {"Left": "LH", "Right": "RH"}[side]
+    return [f"CTX_{h}_{p}" for p in SYNTHSEG_CST_CORTEX], ["BRAIN_STEM"]
+
+
+def synthseg_cst_bd(resample_to=None):
+    """The corticospinal tracts from SynthSeg endpoints only (no waypoints): each side's
+    precentral, paracentral and postcentral cortex to the brainstem (synthseg_cst_labels), kept to its own
+    hemisphere as pyAFQ's CST is (MCAT_RULES' midline tolerance).  The labels are used as they
+    are (synthseg_tol_mm 0), not grown by pyAFQ's 4 mm dist_to_atlas: they are the subject's
+    own, with no registration error to allow for.  Named as pyAFQ's CSTs, so
+    they replace them in a dictionary.  The cortical parcels come from rerunning SynthSeg with
+    its parcellation (mcat.afq.synthseg_parcellated); pyAFQ's own recognition reads them as
+    subject-space masks (mcat.afq.synthseg_cst_for_pyafq)."""
+    import AFQ.api.bundle_dict as abd
+
+    out = {}
+    for side in ("Left", "Right"):
+        start, end = synthseg_cst_labels(side)
+        out[f"{side} Corticospinal"] = dict(cross_midline=False, mcat=dict(start_synthseg=start, end_synthseg=end,
+                                                                            synthseg_tol_mm=0.0))
+    kw = {} if resample_to is None else dict(resample_to=resample_to)
+    return abd.BundleDict(out, **kw)
+
+
+def mcat_bd(fornix=True, synthseg_cst=False):
+    """MCAT's default bundle dictionary (see the module docstring); ``synthseg_cst``: the
+    corticospinal tracts from SynthSeg endpoints (synthseg_cst_bd) instead of pyAFQ's."""
     import AFQ.api.bundle_dict as abd
 
     bd = abd.default_bd() + abd.slf_bd() + abd.callosal_bd() + hcc_bd()
-    return bd + fornix_bd() if fornix else bd
+    bd = bd + fornix_bd() if fornix else bd
+    if synthseg_cst:
+        cst = synthseg_cst_bd()
+        bd = bd[[n for n in bd if n not in set(cst)]] + cst
+    return bd

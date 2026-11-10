@@ -158,7 +158,7 @@ def mni_box(box, bd, mapping, ref_img):
 
 
 def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_midline=(), midline_tol=None,
-                      fornix=True, hypo_file=None):
+                      fornix=True, hypo_file=None, parc_file=None):
     """MCAT bundle specs from pyAFQ's bundle dictionary and MCAT's rules (mcat.bundles): include /
     exclude ROIs (sealed), start / end ROIs grown by pyAFQ's ``dist_to_atlas``, and the other
     hemisphere excluded for bundles that may not cross the midline.  Other pyAFQ criteria
@@ -171,6 +171,9 @@ def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_mid
                 tracts); None: the rules' own
     fornix      False: drop the fornix box (mcat.bundles.FORNIX_BOX_MNI) from the exclusions
                 (the anterior thalamic radiations as pyAFQ defines them)
+    parc_file   where SynthSeg with its cortical parcels and hypothalamus is kept (written on
+                first need), when a bundle's SynthSeg ROIs use cortical parcels (or the
+                hypothalamus and no hypo_file has it)
     hypo_file   where SynthSeg with the hypothalamus is kept, when a bundle's SynthSeg ROIs use
                 the hypothalamus (the fornix) and pyAFQ's SynthSeg lacks it (_synthseg_on_grid)
     thalamus    {"left": mask, "right": mask} on ``ref_img``'s grid (SynthSeg's): a start / end
@@ -189,7 +192,7 @@ def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_mid
     tol = int(dist / np.mean(np.diag(np.linalg.cholesky(R.T @ R))))   # pyAFQ's tolerance_mm_to_vox
     x = nib.affines.apply_affine(ref_img.affine, np.indices(transient.shape).reshape(3, -1).T)[:, 0]
     x = x.reshape(transient.shape)
-    boxes, seg, seg_hypo = {}, None, False
+    boxes, seg, seg_has = {}, None, set()
 
     def box(b):
         key = tuple(sorted((k, tuple(v)) for k, v in b.items()))
@@ -211,10 +214,9 @@ def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_mid
             labels = r[f"{k}_synthseg"]
             if labels:
                 values = synthseg_values(labels)
-                hypo = bool(set(values) & set(HYPOTHALAMUS))
-                if seg is None or (hypo and not seg_hypo):
-                    seg = _synthseg_on_grid(afq, ref_img, hypothalamus=hypo, hypo_file=hypo_file)
-                    seg_hypo = bool(np.isin(seg, HYPOTHALAMUS).any())
+                if seg is None or not _extras(values) <= seg_has:
+                    seg = _synthseg_on_grid(afq, ref_img, values, hypo_file=hypo_file, parc_file=parc_file)
+                    seg_has = _extras(np.unique(seg))
                 roi = np.isin(seg, values)
                 if not roi.any():
                     log.warning("%s %s: SynthSeg labels %s are empty on this grid", name, k, labels)
@@ -225,7 +227,10 @@ def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_mid
                     roi = _subject_thalamus(name, k, roi, thalamus, x, tol)
             else:
                 continue
-            spec[k] = distance_transform_edt(~roi) - 0.5 <= tol   # pyAFQ's endpoint test
+            k_tol = tol
+            if labels and r["synthseg_tol_mm"] is not None:            # SynthSeg ends: their own growth
+                k_tol = int(r["synthseg_tol_mm"] / np.mean(np.diag(np.linalg.cholesky(R.T @ R))))
+            spec[k] = roi if k_tol <= 0 else distance_transform_edt(~roi) - 0.5 <= k_tol   # pyAFQ's endpoint test
         if bd[name].get("cross_midline") is False and name in no_midline:
             log.info("%s: no midline exclusion (no_midline)", name)
         elif bd[name].get("cross_midline") is False:
@@ -258,54 +263,112 @@ def _is_left(name, spec, x):
     return True
 
 
-def _synthseg_on_grid(afq, ref_img, hypothalamus=False, hypo_file=None):
-    """pyAFQ's SynthSeg labels on ``ref_img``'s grid.
+CORTEX_PARCELS = range(34, 102)  # SynthSegLabels.CTX_LH_BANKSSTS .. CTX_RH_INSULA (Desikan-Killiany)
 
-    hypothalamus  the labels must include SynthSeg's hypothalamus (102 / 103), which pyAFQ's own
-                  SynthSeg run leaves out: if pyAFQ's segmentation lacks it, SynthSeg is rerun on
-                  pyAFQ's T1 with the hypothalamus model (AFQ.nn.synthseg.run_synthseg,
-                  parc_hypothalamus=True) and written to ``hypo_file`` (reused next time if it has
-                  the hypothalamus).  pyAFQ's own segmentation and tissue are left as they are."""
+
+def _extras(values):
+    """SynthSeg's extra models that labels ``values`` need: subset of {"hypothalamus", "cortex"}."""
+    v = {int(x) for x in values}
+    return ({"hypothalamus"} if v & set(HYPOTHALAMUS) else set()) | \
+        ({"cortex"} if v & set(CORTEX_PARCELS) else set())
+
+
+def _has(img, extras):
+    """Does the label image hold the labels of these extra models?"""
+    return _extras(np.unique(np.asarray(img.dataobj))) >= set(extras)
+
+
+def parc_file_of(stem):
+    return f"{stem}_model-synthseg2parc_dseg.nii.gz"
+
+
+def _synthseg_on_grid(afq, ref_img, values=(), hypo_file=None, parc_file=None):
+    """pyAFQ's SynthSeg labels on ``ref_img``'s grid, holding the labels ``values`` need.
+
+    pyAFQ's own SynthSeg run has neither the hypothalamus (102 / 103) nor the cortical parcels
+    (34-101).  When ``values`` need one that pyAFQ's segmentation lacks, an earlier rerun is
+    reused (``hypo_file``: hypothalamus only; ``parc_file``: both), or else SynthSeg is rerun
+    on pyAFQ's T1 with both extra models and written to ``parc_file`` (synthseg_parcellated).
+    pyAFQ's own segmentation and tissue are left as they are."""
+    need = _extras(values)
     seg = afq.export("synthseg_model")
     seg = nib.load(seg) if isinstance(seg, str) else seg
-    if hypothalamus and not _has_hypothalamus(seg):
-        seg = _synthseg_hypothalamus(afq, hypo_file)
+    if need and not _has(seg, need):
+        seg = None
+        if need == {"hypothalamus"} and hypo_file and Path(hypo_file).exists() and _has(nib.load(hypo_file), need):
+            seg = nib.load(hypo_file)
+            log.info("SynthSeg with hypothalamus: %s", hypo_file)
+        if seg is None:
+            seg = synthseg_parcellated(afq, parc_file)
     lab = np.rint(_on_grid(seg, ref_img, order=0)).astype(np.int32)
     return lab[..., 0] if lab.ndim == 4 else lab
 
 
-def _has_hypothalamus(img):
-    return bool(np.isin(np.asarray(img.dataobj), HYPOTHALAMUS).any())
-
-
-def _synthseg_hypothalamus(afq, path=None):
-    """SynthSeg 2 + its hypothalamus model on pyAFQ's T1 (``path``: reused / written)."""
+def synthseg_parcellated(afq, path=None):
+    """SynthSeg 2 with its cortical parcellation and hypothalamus models on pyAFQ's T1
+    (AFQ.nn.synthseg.run_synthseg, parc_cortex and parc_hypothalamus): read from ``path`` if
+    it is there and complete, else run (once; several minutes on a CPU) and written there."""
+    full = {"hypothalamus", "cortex"}
     if path is not None and Path(path).exists():
         img = nib.load(path)
-        if _has_hypothalamus(img):
-            log.info("SynthSeg with hypothalamus: %s", path)
+        if _has(img, full):
+            log.info("SynthSeg with cortical parcels and hypothalamus: %s", path)
             return img
-        log.warning("%s has no hypothalamus labels; rerunning SynthSeg", path)
+        log.warning("%s lacks cortical parcels or the hypothalamus; rerunning SynthSeg", path)
     from AFQ.nn.synthseg import run_synthseg
     from AFQ.tasks.utils import check_onnxruntime
 
-    ort = check_onnxruntime("SynthSeg 2.0 (hypothalamus)", "Or give the fornix's hypothalamic end another ROI.")
+    ort = check_onnxruntime("SynthSeg 2.0 (parcellation / hypothalamus)",
+                            "Or give these bundles template ROIs instead of SynthSeg labels.")
     try:
         onnx_kwargs = afq.export("onnx_kwargs")
     except Exception:  # noqa: BLE001  (older pyAFQ)
         onnx_kwargs = {}
     t1 = afq.kwargs["t1_file"]              # an input, not an export
-    log.info("pyAFQ's SynthSeg has no hypothalamus: rerunning SynthSeg with the hypothalamus model on %s", t1)
+    log.info("running SynthSeg with its cortical parcellation and hypothalamus models on %s "
+             "(pyAFQ's SynthSeg has neither; once per subject)", t1)
     t0 = time.time()
-    img = run_synthseg(ort, nib.load(t1), "synthseg2", onnx_kwargs, parc_hypothalamus=True)
+    img = run_synthseg(ort, nib.load(t1), "synthseg2", onnx_kwargs, parc_cortex=True, parc_hypothalamus=True)
     img = nib.Nifti1Image(np.asarray(img.dataobj).astype(np.int16), img.affine)
-    if not _has_hypothalamus(img):
-        log.warning("SynthSeg's hypothalamus model found no hypothalamus")
+    for e in sorted(full):
+        if not _has(img, {e}):
+            log.warning("SynthSeg's %s model found no %s labels", e, e)
     if path is not None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         nib.save(img, path)
-        log.info("SynthSeg with hypothalamus written to %s (%.0fs)", path, time.time() - t0)
+        log.info("SynthSeg with cortical parcels and hypothalamus written to %s (%.0fs)", path, time.time() - t0)
     return img
+
+
+def synthseg_cst_for_pyafq(afq, bd, moments=False, out_dir=None):
+    """``bd`` (already pyafq_bd'd) with pyAFQ's own versions of the SynthSeg corticospinal tracts
+    (mcat.bundles.synthseg_cst_bd): their start / end masks from SynthSeg's parcellation
+    (synthseg_parcellated: run if it is not there yet) written on the DWI grid in MCAT's
+    folder, as subject-space ROIs pyAFQ's recognition reads (endpoints only, exact_endpoints: not
+    grown by dist_to_atlas, as MCAT's synthseg_tol_mm 0)."""
+    from .bundles import synthseg_cst_labels, synthseg_values
+
+    out = mcat_dir(afq, moments, out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stem = str(out / Path(afq.kwargs["base_fname"]).name)
+    seg = synthseg_parcellated(afq, parc_file_of(stem))
+    ref_path = afq.export("b0")
+    ref = nib.load(ref_path)
+    ref = nib.Nifti1Image(np.zeros(ref.shape[:3], np.uint8), ref.affine)
+    lab = np.rint(_on_grid(seg, ref, order=0)).astype(np.int32)
+    lab = lab[..., 0] if lab.ndim == 4 else lab
+    bd.resample_subject_to = ref
+    for side in ("Left", "Right"):
+        name = f"{side} Corticospinal"
+        entry = dict(cross_midline=False, space="subject", exact_endpoints=True)   # no 4 mm growth, as in MCAT
+        for k, labels in zip(("start", "end"), synthseg_cst_labels(side)):
+            f = f"{stem}_bundle-{side}Corticospinal_desc-synthseg{k}pyafq_mask.nii.gz"
+            m = np.isin(lab, synthseg_values(labels)).astype(np.uint8)
+            nib.save(nib.Nifti1Image(m, ref.affine), f)
+            log.info("%s %s for pyAFQ: %s (%d voxels)", name, k, f, int(m.sum()))
+            entry[k] = f
+        bd[name] = entry
+    return bd
 
 
 def _subject_thalami(afq, sh_img):
@@ -335,7 +398,8 @@ def roi_specs(afq, sh_img, transient, stem, bundles=None, thalamus=None, no_midl
     hemisphere, which cross_midline=False bundles exclude too)."""
     for spec in bundle_specs_iter(afq, sh_img, transient, bundles, thalamus=thalamus, no_midline=no_midline,
                                   midline_tol=midline_tol, fornix=fornix,
-                                  hypo_file=f"{stem}_model-synthseg2hypo_dseg.nii.gz"):
+                                  hypo_file=f"{stem}_model-synthseg2hypo_dseg.nii.gz",
+                                  parc_file=parc_file_of(stem)):
         b = f"{stem}_bundle-{re.sub(r'[^A-Za-z0-9]', '', spec['name'])}"
         save = lambda m, desc: nib.save(nib.Nifti1Image(np.asarray(m, np.uint8), sh_img.affine),  # noqa: E731
                                         f"{b}_desc-{desc}_mask.nii.gz")

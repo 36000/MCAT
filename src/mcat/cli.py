@@ -39,6 +39,12 @@ def main(argv=None):
     p.add_argument("--no-fornix-exclude", action="store_true",
                    help="the anterior thalamic radiations as pyAFQ defines them, without the default exclusion "
                         "of the fornix / septum on the midline (MNI box x -3..3, y -28..15, z -5..22 mm)")
+    p.add_argument("--synthseg-cst", action="store_true",
+                   help="corticospinal tracts from SynthSeg endpoints only: precentral, paracentral and postcentral "
+                        "cortex to the brainstem, "
+                        "no waypoints, the same midline rule (mcat.bundles.synthseg_cst_bd); runs SynthSeg's "
+                        "cortical parcellation and hypothalamus models once per subject if not done yet "
+                        "(<stem>_model-synthseg2parc_dseg.nii.gz); with --pyafq, pyAFQ gets the same ends")
     p.add_argument("--pyafq", action="store_true",
                    help="also run pyAFQ's own pipeline (tractography, segmentation, profiles; export_all) "
                         "on the same ParticipantAFQ, for comparison: same inputs, kwargs and derivatives")
@@ -62,7 +68,10 @@ def main(argv=None):
     if "bundle_info" not in kwargs:              # MCAT's bundles: pyAFQ's defaults + the HCC + the fornix
         from .bundles import mcat_bd
 
-        kwargs["bundle_info"] = mcat_bd()
+        kwargs["bundle_info"] = mcat_bd(synthseg_cst=a.synthseg_cst)
+    elif a.synthseg_cst:
+        p.error("--synthseg-cst replaces the CSTs of MCAT's default bundles; with your own bundle_info, "
+                "add mb.synthseg_cst_bd() to it instead")
     if "tracking_params" in kwargs:
         if "odf_model" not in kwargs["tracking_params"]:
             kwargs["tracking_params"]["odf_model"] = "CSD"
@@ -87,6 +96,10 @@ def main(argv=None):
         from .bundles import pyafq_bd
 
         bd = pyafq_bd(kwargs["bundle_info"])
+        if a.synthseg_cst:     # pyAFQ reads the SynthSeg CST's ends as subject-space masks
+            from .afq import synthseg_cst_for_pyafq
+
+            bd = synthseg_cst_for_pyafq(afq, bd, a.moments, a.out_dir)
         logging.getLogger("mcat").info("pyAFQ's own pipeline on the same inputs (%d bundles) -> %s",
                                        len(bd), a.output_dir)
         ParticipantAFQ(a.dwi, a.bval, a.bvec, a.t1, a.output_dir,
