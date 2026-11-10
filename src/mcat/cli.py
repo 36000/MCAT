@@ -62,10 +62,7 @@ def main(argv=None):
     if "bundle_info" not in kwargs:              # MCAT's bundles: pyAFQ's defaults + the HCC + the fornix
         from .bundles import mcat_bd
 
-        # pyAFQ cannot segment the fornix (its ends are SynthSeg labels, read only by MCAT)
-        kwargs["bundle_info"] = mcat_bd(fornix=not a.pyafq)
-        if a.pyafq:
-            logging.getLogger("mcat").info("--pyafq: the fornix is left out (MCAT-only SynthSeg ends)")
+        kwargs["bundle_info"] = mcat_bd()
     if "tracking_params" in kwargs:
         if "odf_model" not in kwargs["tracking_params"]:
             kwargs["tracking_params"]["odf_model"] = "CSD"
@@ -86,9 +83,14 @@ def main(argv=None):
         max_length=a.max_length, viz_rois=a.viz_rois, no_midline=a.no_midline,
         midline_tol=a.midline_tol, out_dir=a.out_dir, verbose=a.verbose,
         fornix=not a.no_fornix_exclude)
-    if a.pyafq:
-        logging.getLogger("mcat").info("pyAFQ's own pipeline on the same inputs -> %s", a.output_dir)
-        afq.export_all(viz=not a.no_viz)
+    if a.pyafq:   # pyAFQ's recognition: MCAT's rules removed, MCAT-only bundles (fornix) dropped
+        from .bundles import pyafq_bd
+
+        bd = pyafq_bd(kwargs["bundle_info"])
+        logging.getLogger("mcat").info("pyAFQ's own pipeline on the same inputs (%d bundles) -> %s",
+                                       len(bd), a.output_dir)
+        ParticipantAFQ(a.dwi, a.bval, a.bvec, a.t1, a.output_dir,
+                       **dict(kwargs, bundle_info=bd)).export_all(viz=not a.no_viz)
 
 
 def afq_kwargs(text):

@@ -25,7 +25,8 @@ Rules (``RULE_DEFAULTS`` hold for every bundle that does not set them):
 
 ``mcat_bd()`` is MCAT's default dictionary: pyAFQ's defaults (default + SLF + callosal) and
 the hippocampal cingulum and the fornix (MCAT only: its ends are SynthSeg labels, which
-pyAFQ's segmentation does not read; ``fornix=False`` leaves it out, as ``--pyafq`` does).
+pyAFQ's segmentation does not read; ``fornix=False`` leaves it out; pyafq_bd(bd) gives the
+dictionary pyAFQ's own recognition accepts).
 """
 from __future__ import annotations
 
@@ -109,6 +110,23 @@ def fornix_bd(resample_to=None):
                       include_mni_boxes=[FORNIX_BODY_MNI], midline_tol=3.0))
     kw = {} if resample_to is None else dict(resample_to=resample_to)
     return abd.BundleDict(out, **kw)
+
+
+PYAFQ_ROI_KEYS = ("include", "start", "end", "prob_map", "recobundles")
+
+
+def pyafq_bd(bd):
+    """``bd`` as pyAFQ's recognition accepts it: each bundle's "mcat" rules removed (newer
+    pyAFQ rejects unknown criteria), and bundles left with no ROI pyAFQ uses (the fornix,
+    defined only by MCAT's SynthSeg ends) dropped."""
+    out = bd.copy()
+    for name in list(out._dict):
+        entry = {k: v for k, v in out._dict[name].items() if k != "mcat"}
+        if not any(k in entry for k in PYAFQ_ROI_KEYS):
+            del out[name]
+            continue
+        out._dict[name] = entry
+    return out
 
 
 def mcat_bd(fornix=True):
