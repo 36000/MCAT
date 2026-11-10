@@ -29,7 +29,7 @@ as you click or scroll. The slices start at the core's midpoint.
 ## A standalone web page
 
 ```python
-mcat.viewer.save_html("bundles.html", folder, glyphs=True)
+mcat.save_html("bundles.html", folder, glyphs=True)
 ```
 
 writes the same scene as a standalone web page, to open in any browser or share. The page has

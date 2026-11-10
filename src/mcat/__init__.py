@@ -16,7 +16,7 @@ from .afq import run
 from .chain import Chain, ChainConfig
 from .core import bundle_core
 from .solve import prepare_launches, segment_bundles
-
+from .viewer import save_html
 
 def view(*args, **kwargs):
     """ipyniivue widget with bundle densities and cores (see mcat.viewer.view)."""
@@ -25,4 +25,4 @@ def view(*args, **kwargs):
     return _view(*args, **kwargs)
 
 
-__all__ = ["Chain", "ChainConfig", "bundle_core", "prepare_launches", "run", "segment_bundles", "view"]
+__all__ = ["Chain", "ChainConfig", "bundle_core", "prepare_launches", "run", "segment_bundles", "view", "save_html"]

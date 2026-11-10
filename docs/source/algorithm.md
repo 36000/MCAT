@@ -46,6 +46,7 @@ MCAT takes all of its inputs from [pyAFQ](https://tractometry.org/pyAFQ):
 - the seeds
 - the bundle definitions, with their ROIs warped to the subject
 
+(tissue-table)=
 Each voxel inside the mask gets one of four roles, chosen as pyAFQ's tracker chooses
 (`mcat.afq.tissue_labels`):
 

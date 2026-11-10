@@ -7,7 +7,7 @@
 
 .. autofunction:: mcat.view
 
-.. autofunction:: mcat.viewer.save_html
+.. autofunction:: mcat.save_html
 ```
 
 ## The chain and the solves
