@@ -70,6 +70,51 @@ def _path_sums(X, Yall, Y, wrows, p_vol, p_dirs, p_len, p_nbr, p_trip, c, z):
 
 
 @njit(cache=True)
+def _path_sums_tree(X, Yall, Y, wrows, u_dir, u_parent, u_d1, u_skip, u_eptr, e_vol, e_nbr, e_trip, pi, c, z):
+    """Preorder prefix-tree evaluation of c[t] and z[d1] with zero-ODF subtree skipping."""
+    c[:] = 0.0
+    z[:] = 0.0
+    n_nodes = u_dir.shape[0]
+    u = 0
+    while u < n_nodes:
+        d = u_dir[u]
+        par = u_parent[u]
+        if par < 0:
+            if X[d] <= 0.0:
+                u = u_skip[u]
+                continue
+            val_u = 1.0
+        else:
+            if X[d] <= 0.0:
+                u = u_skip[u]
+                continue
+            val_u = pi[par] * (X[d] / Y[u_dir[par]])
+            if val_u == 0.0:
+                u = u_skip[u]
+                continue
+        pi[u] = val_u
+        d1 = u_d1[u]
+        e0 = u_eptr[u]
+        e1 = u_eptr[u + 1]
+        if e0 < e1:
+            z_acc = 0.0
+            for e in range(e0, e1):
+                r = wrows[e_nbr[e]]
+                if r == -2:
+                    continue
+                v = e_vol[e] * val_u
+                if r >= 0:
+                    v *= Yall[r, d]
+                c[e_trip[e]] += v
+                z_acc += v
+            z[d1] += z_acc
+        if Y[d] <= 0.0:
+            u = u_skip[u]
+        else:
+            u += 1
+
+
+@njit(cache=True)
 def _incoming_norm(X, Y, z, cone_ptr, cone_idx, Zv):
     """Z_v(e) = sum_{d in cone(e)} G_v(e, d) z(d)."""
     for e in range(X.shape[0]):
@@ -84,9 +129,9 @@ def _incoming_norm(X, Y, z, cone_ptr, cone_idx, Zv):
 
 @njit(cache=True)
 def _apply_incoming(q_e, q_w, X, Y, Zv, c, cone_ptr, cone_idx, d1_ptr, t_nbr, t_bin, acc,
-                    touched, out):
+                    touched, out, tau=0.0):
     """Outcomes out[n, b'] of a walker whose incoming direction is distributed as q.
-    Returns the dead mass."""
+    Returns the dead mass.  When tau > 0 (stop-mass regularization), normalises by Zv[e] + tau."""
     dead = 0.0
     ntouch = 0
     for i in range(q_e.shape[0]):
@@ -94,10 +139,13 @@ def _apply_incoming(q_e, q_w, X, Y, Zv, c, cone_ptr, cone_idx, d1_ptr, t_nbr, t_
         qe = q_w[i]
         if qe <= 0.0:
             continue
-        if Zv[e] <= 0.0:
+        z_eff = Zv[e] + tau
+        if Zv[e] <= 0.0 or z_eff <= 0.0:
             dead += qe
             continue
-        f = qe / (Zv[e] * Y[e])
+        if tau > 0.0:
+            dead += qe * (tau / z_eff)
+        f = qe / (z_eff * Y[e])
         for k in range(cone_ptr[e], cone_ptr[e + 1]):
             d = cone_idx[k]
             if acc[d] == 0.0:
@@ -195,6 +243,279 @@ def launch_batch(seed_vlin, dptr, dirs, Xall, Yall, xrow, label, noff, double_od
             out[h] = 0.0
             dead[h] = _apply_incoming(np.full(1, dirs[h], np.int64), np.ones(1), X, Y, Zv, c,
                                       cone_ptr, cone_idx, d1_ptr, t_nbr, t_bin, acc, touched, out[h])
+
+
+@njit(parallel=True, cache=True)
+def chunk_blocks_tree(vlist, Xall, Yall, xrow, label, noff, double_odf,
+                      u_dir, u_parent, u_d1, u_skip, u_eptr, e_vol, e_nbr, e_trip,
+                      d1_ptr, t_nbr, t_bin, cone_ptr, cone_idx, bin_ptr, bin_idx, out, dead, tau=0.0):
+    """Prefix-tree accelerated chunk_blocks with optional stop-mass tau."""
+    nb = out.shape[1]
+    V = Xall.shape[1]
+    nT = t_nbr.shape[0]
+    n_nodes = u_dir.shape[0]
+    for i in prange(vlist.shape[0]):
+        v = vlist[i]
+        out[i] = 0.0
+        if xrow[v] < 0:
+            dead[i] = 1.0
+            continue
+        X = Xall[xrow[v]].astype(np.float64)
+        Y = Yall[xrow[v]].astype(np.float64)
+        wrows = np.empty(26, np.int64)
+        _lookahead_rows(v, label, xrow, noff, double_odf, wrows)
+        c = np.empty(nT)
+        z = np.empty(V)
+        pi = np.empty(n_nodes)
+        _path_sums_tree(X, Yall, Y, wrows, u_dir, u_parent, u_d1, u_skip, u_eptr,
+                        e_vol, e_nbr, e_trip, pi, c, z)
+        Zv = np.empty(V)
+        _incoming_norm(X, Y, z, cone_ptr, cone_idx, Zv)
+        acc = np.zeros(V)
+        touched = np.empty(V, np.int64)
+        for b in range(nb):
+            q_e = bin_idx[bin_ptr[b]:bin_ptr[b + 1]]
+            dead[i, b] = _apply_incoming(q_e, class_q(X, Y, q_e), X, Y, Zv, c, cone_ptr, cone_idx,
+                                         d1_ptr, t_nbr, t_bin, acc, touched, out[i, b], tau)
+
+
+@njit(parallel=True, cache=True)
+def launch_batch_tree(seed_vlin, dptr, dirs, Xall, Yall, xrow, label, noff, double_odf,
+                      u_dir, u_parent, u_d1, u_skip, u_eptr, e_vol, e_nbr, e_trip,
+                      d1_ptr, t_nbr, t_bin, cone_ptr, cone_idx, nb, out, dead, tau=0.0):
+    """Prefix-tree accelerated launch_batch with optional stop-mass tau."""
+    V = Xall.shape[1]
+    nT = t_nbr.shape[0]
+    n_nodes = u_dir.shape[0]
+    for i in prange(seed_vlin.shape[0]):
+        v = seed_vlin[i]
+        if xrow[v] < 0:
+            for h in range(dptr[i], dptr[i + 1]):
+                out[h] = 0.0
+                dead[h] = 1.0
+            continue
+        X = Xall[xrow[v]].astype(np.float64)
+        Y = Yall[xrow[v]].astype(np.float64)
+        wrows = np.empty(26, np.int64)
+        _lookahead_rows(v, label, xrow, noff, double_odf, wrows)
+        c = np.empty(nT)
+        z = np.empty(V)
+        pi = np.empty(n_nodes)
+        _path_sums_tree(X, Yall, Y, wrows, u_dir, u_parent, u_d1, u_skip, u_eptr,
+                        e_vol, e_nbr, e_trip, pi, c, z)
+        Zv = np.empty(V)
+        _incoming_norm(X, Y, z, cone_ptr, cone_idx, Zv)
+        acc = np.zeros(V)
+        touched = np.empty(V, np.int64)
+        for h in range(dptr[i], dptr[i + 1]):
+            out[h] = 0.0
+            dead[h] = _apply_incoming(np.full(1, dirs[h], np.int64), np.ones(1), X, Y, Zv, c,
+                                      cone_ptr, cone_idx, d1_ptr, t_nbr, t_bin, acc, touched, out[h], tau)
+
+
+# ------------------------------------------------------------------ PTT kernels
+@njit(parallel=True, cache=True)
+def _cylindrical_probe_filter(X, cyl_nbr, top_n, top_w, fod_thresh):
+    """Topographic cylindrical probe filter in the local frame of each sphere direction d:
+    blends each voxel's PMF X[i, d] with its valid white-matter cylinder neighbours."""
+    N, V = X.shape
+    K_top = top_n.shape[1]
+    out = np.empty_like(X)
+    for i in prange(N):
+        mx = np.float32(0.0)
+        for d in range(V):
+            val = X[i, d]
+            w_sum = np.float32(1.0)
+            for k in range(K_top):
+                nb_row = cyl_nbr[i, top_n[d, k]]
+                if nb_row >= 0:
+                    w = top_w[d, k]
+                    val += w * X[nb_row, d]
+                    w_sum += w
+            val /= w_sum
+            out[i, d] = val
+            if val > mx:
+                mx = val
+        if mx > 0.0:
+            thr = np.float32(fod_thresh) * mx
+            tot = np.float32(0.0)
+            for d in range(V):
+                if out[i, d] < thr:
+                    out[i, d] = 0.0
+                else:
+                    tot += out[i, d]
+            if tot > 0.0:
+                inv = np.float32(1.0) / tot
+                for d in range(V):
+                    out[i, d] *= inv
+    return out
+
+
+@njit(cache=True)
+def _path_sums_tree_ptt(X, Yall, Y, wrows, u_dir, u_parent, u_d1, u_skip, u_eptr,
+                        e_vol, e_nbr, e_trip, u_curv_w, u_pt_dir, pi, c, z):
+    """Preorder prefix-tree evaluation with PTT intra-voxel curvature/co-circularity weights
+    ``u_curv_w`` and parallel-transported geodesic look-ahead ``u_pt_dir``."""
+    c[:] = 0.0
+    z[:] = 0.0
+    n_nodes = u_dir.shape[0]
+    u = 0
+    while u < n_nodes:
+        d = u_dir[u]
+        par = u_parent[u]
+        if par < 0:
+            if X[d] <= 0.0:
+                u = u_skip[u]
+                continue
+            val_u = 1.0
+        else:
+            if X[d] <= 0.0:
+                u = u_skip[u]
+                continue
+            val_u = pi[par] * (u_curv_w[u] * X[d] / Y[u_dir[par]])
+            if val_u == 0.0:
+                u = u_skip[u]
+                continue
+        pi[u] = val_u
+        d1 = u_d1[u]
+        d_pt = u_pt_dir[u]
+        e0 = u_eptr[u]
+        e1 = u_eptr[u + 1]
+        if e0 < e1:
+            z_acc = 0.0
+            for e in range(e0, e1):
+                r = wrows[e_nbr[e]]
+                if r == -2:
+                    continue
+                v = e_vol[e] * val_u
+                if r >= 0:
+                    v *= Yall[r, d_pt]
+                c[e_trip[e]] += v
+                z_acc += v
+            z[d1] += z_acc
+        if Y[d] <= 0.0:
+            u = u_skip[u]
+        else:
+            u += 1
+
+
+@njit(cache=True)
+def _incoming_norm_ptt(X, Y, z, cone_ptr, cone_idx, cone_w, Zv):
+    """Z_v(e) = sum_{d in cone(e)} cone_w(e, d) X_v(d) z(d) / Y_v(e)."""
+    for e in range(X.shape[0]):
+        if Y[e] <= 0.0:
+            Zv[e] = 0.0
+            continue
+        s = 0.0
+        for k in range(cone_ptr[e], cone_ptr[e + 1]):
+            s += cone_w[k] * X[cone_idx[k]] * z[cone_idx[k]]
+        Zv[e] = s / Y[e]
+
+
+@njit(cache=True)
+def _apply_incoming_ptt(q_e, q_w, X, Y, Zv, c, cone_ptr, cone_idx, cone_w, d1_ptr, t_nbr, t_bin,
+                        acc, touched, out, tau=0.0):
+    """PTT version of _apply_incoming with Gaussian curvature weights ``cone_w``."""
+    dead = 0.0
+    ntouch = 0
+    for i in range(q_e.shape[0]):
+        e = q_e[i]
+        qe = q_w[i]
+        if qe <= 0.0:
+            continue
+        z_eff = Zv[e] + tau
+        if Zv[e] <= 0.0 or z_eff <= 0.0:
+            dead += qe
+            continue
+        if tau > 0.0:
+            dead += qe * (tau / z_eff)
+        f = qe / (z_eff * Y[e])
+        for k in range(cone_ptr[e], cone_ptr[e + 1]):
+            d = cone_idx[k]
+            if acc[d] == 0.0:
+                touched[ntouch] = d
+                ntouch += 1
+            acc[d] += f * cone_w[k]
+    for i in range(ntouch):
+        d = touched[i]
+        ud = X[d] * acc[d]
+        acc[d] = 0.0
+        if ud <= 0.0:
+            continue
+        for t in range(d1_ptr[d], d1_ptr[d + 1]):
+            out[t_nbr[t], t_bin[t]] += ud * c[t]
+    return dead
+
+
+@njit(parallel=True, cache=True)
+def chunk_blocks_tree_ptt(vlist, Xall, Yall, xrow, label, noff, double_odf,
+                          u_dir, u_parent, u_d1, u_skip, u_eptr, e_vol, e_nbr, e_trip,
+                          d1_ptr, t_nbr, t_bin, cone_ptr, cone_idx,
+                          cone_w, u_curv_w, u_pt_dir, bin_ptr, bin_idx, out, dead, tau=0.0):
+    """PTT prefix-tree chunk_blocks with curvature weights and co-circular look-ahead."""
+    nb = out.shape[1]
+    V = Xall.shape[1]
+    nT = t_nbr.shape[0]
+    n_nodes = u_dir.shape[0]
+    for i in prange(vlist.shape[0]):
+        v = vlist[i]
+        out[i] = 0.0
+        if xrow[v] < 0:
+            dead[i] = 1.0
+            continue
+        X = Xall[xrow[v]].astype(np.float64)
+        Y = Yall[xrow[v]].astype(np.float64)
+        wrows = np.empty(26, np.int64)
+        _lookahead_rows(v, label, xrow, noff, double_odf, wrows)
+        c = np.empty(nT)
+        z = np.empty(V)
+        pi = np.empty(n_nodes)
+        _path_sums_tree_ptt(X, Yall, Y, wrows, u_dir, u_parent, u_d1, u_skip, u_eptr,
+                            e_vol, e_nbr, e_trip, u_curv_w, u_pt_dir, pi, c, z)
+        Zv = np.empty(V)
+        _incoming_norm_ptt(X, Y, z, cone_ptr, cone_idx, cone_w, Zv)
+        acc = np.zeros(V)
+        touched = np.empty(V, np.int64)
+        for b in range(nb):
+            q_e = bin_idx[bin_ptr[b]:bin_ptr[b + 1]]
+            dead[i, b] = _apply_incoming_ptt(q_e, class_q(X, Y, q_e), X, Y, Zv, c, cone_ptr, cone_idx,
+                                             cone_w, d1_ptr, t_nbr, t_bin, acc, touched, out[i, b], tau)
+
+
+@njit(parallel=True, cache=True)
+def launch_batch_tree_ptt(seed_vlin, dptr, dirs, Xall, Yall, xrow, label, noff, double_odf,
+                          u_dir, u_parent, u_d1, u_skip, u_eptr, e_vol, e_nbr, e_trip,
+                          d1_ptr, t_nbr, t_bin, cone_ptr, cone_idx,
+                          cone_w, u_curv_w, u_pt_dir, nb, out, dead, tau=0.0):
+    """PTT prefix-tree launch_batch with curvature weights and co-circular look-ahead."""
+    V = Xall.shape[1]
+    nT = t_nbr.shape[0]
+    n_nodes = u_dir.shape[0]
+    for i in prange(seed_vlin.shape[0]):
+        v = seed_vlin[i]
+        if xrow[v] < 0:
+            for h in range(dptr[i], dptr[i + 1]):
+                out[h] = 0.0
+                dead[h] = 1.0
+            continue
+        X = Xall[xrow[v]].astype(np.float64)
+        Y = Yall[xrow[v]].astype(np.float64)
+        wrows = np.empty(26, np.int64)
+        _lookahead_rows(v, label, xrow, noff, double_odf, wrows)
+        c = np.empty(nT)
+        z = np.empty(V)
+        pi = np.empty(n_nodes)
+        _path_sums_tree_ptt(X, Yall, Y, wrows, u_dir, u_parent, u_d1, u_skip, u_eptr,
+                            e_vol, e_nbr, e_trip, u_curv_w, u_pt_dir, pi, c, z)
+        Zv = np.empty(V)
+        _incoming_norm_ptt(X, Y, z, cone_ptr, cone_idx, cone_w, Zv)
+        acc = np.zeros(V)
+        touched = np.empty(V, np.int64)
+        for h in range(dptr[i], dptr[i + 1]):
+            out[h] = 0.0
+            dead[h] = _apply_incoming_ptt(np.full(1, dirs[h], np.int64), np.ones(1), X, Y, Zv, c,
+                                          cone_ptr, cone_idx, cone_w, d1_ptr, t_nbr, t_bin,
+                                          acc, touched, out[h], tau)
 
 
 # ------------------------------------------------------------------ stencil storage
@@ -350,6 +671,51 @@ def mask_accumulate(nxt, mask, total, ncomp):
 
 
 @njit(parallel=True, cache=True)
+def _step_stats(term, nxt, mask, ncomp):
+    """Apply mask to nxt in-place and return per-column [|u|_1, |w|_1, <u,u>, <u,w>, <w,w>] over mass rows."""
+    R, C = nxt.shape
+    nblk = 512
+    bs = (R + nblk - 1) // nblk
+    part = np.zeros((nblk, C, 5))
+    for b in prange(nblk):
+        for i in range(b * bs, min(R, (b + 1) * bs)):
+            mass_row = i % ncomp == 0
+            for c in range(C):
+                w = nxt[i, c] * mask[i, c]
+                nxt[i, c] = w
+                if mass_row:
+                    u = term[i, c]
+                    part[b, c, 0] += abs(u)
+                    part[b, c, 1] += abs(w)
+                    part[b, c, 2] += u * u
+                    part[b, c, 3] += u * w
+                    part[b, c, 4] += w * w
+    return part.sum(0)
+
+
+@njit(parallel=True, cache=True)
+def _extrapolate_accumulate(term, nxt, total, omega, ncomp):
+    """Invariant-preserving extrapolated update: total += omega * nxt; nxt = (1 - omega) * term + omega * nxt."""
+    R, C = nxt.shape
+    nblk = 512
+    bs = (R + nblk - 1) // nblk
+    part = np.zeros((nblk, C))
+    for b in prange(nblk):
+        for i in range(b * bs, min(R, (b + 1) * bs)):
+            mass_row = i % ncomp == 0
+            for c in range(C):
+                om = omega[c]
+                w = nxt[i, c]
+                u = term[i, c]
+                total[i, c] += om * w
+                u_new = (1.0 - om) * u + om * w
+                nxt[i, c] = u_new
+                if mass_row:
+                    part[b, c] += abs(u_new)
+    return part.sum(0)
+
+
+@njit(parallel=True, cache=True)
 def paired_density(S, beta, colsign, n_vox, rows_per_vox):
     """Per voxel: sum over its rows and the columns of S * beta * colsign."""
     out = np.zeros(n_vox)
@@ -433,3 +799,33 @@ def scatter_init(hseed, lptr, lkey, lval, coef, label, noff, tindex, aindex, nb,
                 if s != 0.0:
                     for c in range(C):
                         a0[aindex[w], c] += coef[h, c] * s
+
+
+# ------------------------------------------------------------------ bundle fields
+@njit(parallel=True, cache=True)
+def stencil_flux(ptr, slot, w, tn, tb, nbr_t, nb, S, beta, colsign, out26):
+    """out26[vox, n] = sum over the voxel's states s, their transitions s -> j into neighbour n,
+    and the columns c, of colsign[c] S[s, c] Q(s, j) beta[j, c]: the expected number of
+    bundle-streamline steps from the voxel into its neighbour n (mcat.fields.edge_flux)."""
+    n_vox = out26.shape[0]
+    C = S.shape[1]
+    for v in prange(n_vox):
+        for n in range(26):
+            out26[v, n] = 0.0
+        for b in range(nb):
+            s = v * nb + b
+            nz = False
+            for c in range(C):
+                if S[s, c] != 0.0:
+                    nz = True
+                    break
+            if not nz:
+                continue
+            for kk in range(ptr[s], ptr[s + 1]):
+                sl = slot[kk]
+                n = tn[b, sl]
+                j = np.int64(nbr_t[v, n]) * nb + tb[b, sl]
+                acc = 0.0
+                for c in range(C):
+                    acc += colsign[c] * S[s, c] * beta[j, c]
+                out26[v, n] += w[kk] * acc

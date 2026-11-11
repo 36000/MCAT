@@ -554,6 +554,38 @@ def _budget(max_mem, chain, launches):
     return b
 
 
+def write_fixels(chain, sh, results, launches, path, affine, tol, max_mem, on_trapped=None,
+                 lobes=None, whole=None):
+    """The subject's fixels and each bundle's expected streamlines through them (mcat.fixels),
+    as an MRtrix fixel directory at ``path``: ``<bundle>_streamlines``, ``all_streamlines``
+    (the unconditioned chain: every walk from every seed, no ROIs), ``<bundle>_share`` (of
+    all walks through the fixel) and ``<bundle>_share_of_bundles`` (of the solved bundles')."""
+    from .fixels import fixel_streamlines, segment_lobes, write_fixel_directory
+
+    t0 = time.time()
+    ijk = np.stack(np.unravel_index(chain.t_lin, chain.pshape), 1) - 1
+    rows = sh[tuple(ijk.T)]
+    if lobes is None:
+        lobes = segment_lobes(rows, chain.geo)
+    if whole is None:
+        whole = segment_bundles(chain, [dict(name="whole brain")], launches, tol=tol, max_mem=max_mem,
+                                on_trapped=on_trapped)["whole brain"]
+    n_all, _ = fixel_streamlines(whole.density_class, rows, chain.geo, lobes)
+    data = {"all_streamlines": n_all}
+    per = {re.sub(r"[^A-Za-z0-9]", "", name): fixel_streamlines(res.density_class, rows, chain.geo, lobes)[0]
+           for name, res in results.items()}
+    n_bundles = sum(per.values())
+    frac = lambda a, b: np.divide(a, b, out=np.zeros_like(a), where=b > 0)  # noqa: E731
+    for key, n_b in per.items():
+        data[f"{key}_streamlines"] = n_b
+        data[f"{key}_share"] = frac(n_b, n_all)                    # of all walks through the fixel
+        data[f"{key}_share_of_bundles"] = frac(n_b, n_bundles)     # of the solved bundles' walks
+    write_fixel_directory(path, lobes, ijk, affine, chain.shape, data)
+    log.info("fixels: %d in %d voxels, %d bundles -> %s (%.0fs)", lobes.n_fixels, len(ijk), len(results), path,
+             time.time() - t0)
+    return lobes, data
+
+
 def _bytes(x):
     if isinstance(x, str):
         m = re.fullmatch(r"\s*([\d.]+)\s*([kmgt]?)b?\s*", x.lower())
@@ -565,7 +597,8 @@ def _bytes(x):
 
 def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angle=35.0, double_odf=True,
         cores=True, viz=True, synthseg_thalamus=True, max_length=250.0, viz_rois=False,
-        no_midline=(), midline_tol=None, out_dir=None, verbose=False, fornix=True):
+        no_midline=(), midline_tol=None, out_dir=None, verbose=False, fornix=True, flux=False,
+        fixels=False):
     """Segment pyAFQ's bundles with MCAT.
 
     afq         ``ParticipantAFQ`` or ``GroupAFQ`` (every participant in turn)
@@ -601,13 +634,24 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
                 sum); the time per stage is logged at the end anyway
     synthseg_thalamus  with pyAFQ's SynthSeg tissue (pve unset or "synthseg"), a template start / end
                 ROI that is the thalamus is replaced by SynthSeg's thalamus (see bundle_specs)
+    flux        also write each bundle's edge flux (mcat.fields): the expected streamline steps
+                from every voxel into each of its 26 neighbours, and the flux through each
+                voxel.  Not with moments.  The fields themselves are not kept here; use
+                ``segment_bundles(keep_fields=True)`` to work with them.
+    fixels      also write an MRtrix fixel directory, <stem>_desc-mcat_fixels/ (mcat.fixels):
+                the subject's fixels from the fODF, and per fixel each bundle's expected
+                streamlines through it (<bundle>_streamlines), the streamlines of the
+                unconditioned chain (all_streamlines: every walk from every seed, no ROIs, one
+                extra solve), the bundle's share of them (<bundle>_share) and its share of the
+                solved bundles' streamlines (<bundle>_share_of_bundles).  For fixel-based
+                analysis without tractography.
     Returns {bundle: BundleResult} (a dict per participant for a GroupAFQ)."""
     import numba
 
     if hasattr(afq, "pAFQ_list"):
         kw = dict(cores=cores, viz=viz, synthseg_thalamus=synthseg_thalamus, max_length=max_length,
                   viz_rois=viz_rois, no_midline=no_midline, midline_tol=midline_tol,
-                  verbose=verbose, fornix=fornix)
+                  verbose=verbose, fornix=fornix, flux=flux, fixels=fixels)
         return {f"sub-{s}_ses-{t}": run(p, n_proc, max_mem, bundles, moments, tol, angle, double_odf, **kw,
                                         out_dir=out_dir and str(Path(out_dir) / f"sub-{s}" / f"ses-{t}"))
                 for s, t, p in zip(afq.valid_sub_list, afq.valid_ses_list, afq.pAFQ_list)}
@@ -657,6 +701,28 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
     chain.release_pmfs()
     rows = []
 
+    n_trapped = [0]
+
+    def trapped(what, names, vol):
+        # where the mass a stalled solve could not finish sits: open it over the T1
+        n_trapped[0] += 1
+        f = f"{stem}_desc-trapped{what}{n_trapped[0]}_map.nii.gz"
+        nib.save(nib.Nifti1Image(vol, sh_img.affine), f)
+        peak = nib.affines.apply_affine(sh_img.affine, np.unravel_index(np.argmax(vol), vol.shape))
+        log.warning("%s solve of %s did not finish: the mass left (%.1e of the start) is mapped in %s; "
+                    "most of it at (%.0f, %.0f, %.0f) mm", what, ", ".join(names), vol.sum(), f, *peak)
+
+    budget = _budget(max_mem, chain, launches)
+    from .fixels import segment_lobes
+    from .quantify import quantify_bundle
+
+    t_ijk = np.stack(np.unravel_index(chain.t_lin, chain.pshape), 1) - 1
+    sh_rows = sh[tuple(t_ijk.T)]
+    with clock("whole-brain reference & lobes"):
+        lobes = segment_lobes(sh_rows, chain.geo)
+        whole = segment_bundles(chain, [dict(name="whole brain")], launches, tol=tol, max_mem=budget,
+                                on_trapped=trapped)["whole brain"]
+
     def write(res):
         name = re.sub(r"[^A-Za-z0-9]", "", res.name)
         b = f"{stem}_bundle-{name}"
@@ -671,37 +737,65 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
         odf = np.zeros(chain.shape + coef.shape[1:], np.float32)
         odf[ijk] = coef
         maps["visitodf"] = (odf, "dwimap")
+        qb = None
+        if getattr(res, "flux26", None) is not None or res.fields is not None:
+            qb = quantify_bundle(chain, res, whole.density_class, sh_rows, sh_img.affine, lobes=lobes,
+                                 compute_boundary_conductance=False)
+            maps["afd"] = (chain.to_volume(qb.voxel_afd_t), "map")
+            maps["tdimm"] = (chain.to_volume(qb.tdi_mm_t), "map")
+            maps["qharmonic"] = (chain.to_volume(qb.q_harmonic_t), "map")
+            maps["coherence"] = (chain.to_volume(qb.flux_coherence_t), "map")
+            maps["keff"] = (chain.to_volume(qb.branching_k_eff_t), "map")
+            res.info["quantification"] = qb.summary
+        res.start_mask = None
+        res.end_mask = None
+        if res.fields is not None:
+            f26 = res.fields.edge_flux()
+            maps["throughflux"] = (chain.to_volume(res.fields.through_flux(f26)), "map")
+            f26vol = np.zeros(chain.shape + (26,), np.float32)
+            f26vol[tuple((np.stack(np.unravel_index(chain.t_lin, chain.pshape), 1) - 1).T)] = f26
+            maps["edgeflux"] = (f26vol, "map")
+            res.info["flux_conservation"] = {k: v for k, v in res.fields.conservation(f26).items()
+                                             if not isinstance(v, np.ndarray)}
+            res.fields = None
         for desc, (vol, suffix) in maps.items():
             nib.save(nib.Nifti1Image(vol, sh_img.affine), f"{b}_desc-{desc}_{suffix}.nii.gz")
         with open(f"{b}_desc-summary.json", "w") as fh:
             json.dump(dict(bundle=res.name, config=cfg.key(), result=res.info,
                            valid_ends=[ABSORB_CLASSES[c] for c in (1, 3)],
                            density="expected steps of bundle streamlines in each voxel, all seeds",
+                           afd="AFD-calibrated intra-axonal bundle density per voxel (steradians, analytical SIFT2)",
+                           tdimm="expected physical chord length traversed per voxel (mm)",
+                           qharmonic="harmonic committor coordinate in [0, 1] along the reactive flux graph",
+                           coherence="reactive flux directional coherence in [0, 1] per voxel",
+                           keff="effective outgoing neighbour branching exp(H) in [1, 26] per voxel",
                            endpoints="expected bundle endpoints per voxel (two per streamline)",
                            visitodf="the walkers' directions per voxel: SH (descoteaux07, legacy, "
                                     "lmax 8), expected visits per steradian",
-                           seedprob="P(the streamline seeded here belongs to the bundle)"), fh, indent=1)
+                           seedprob="P(the streamline seeded here belongs to the bundle)",
+                           **({"throughflux": "expected bundle-streamline steps leaving each voxel",
+                               "edgeflux": "the same per neighbour: 26 volumes, mcat.geometry.OFFSETS order"}
+                              if flux else {})), fh, indent=1)
         i = res.info
-        rows.append(dict(bundle=res.name, expected_streamlines=round(i["expected_bundle_streamlines"], 4),
-                         columns=i["n_columns"], backward_steps=i["backward"]["iterations"],
-                         forward_steps=i["forward"]["iterations"],
-                         seconds=i["seconds"]))
+        row = dict(bundle=res.name, expected_streamlines=round(i["expected_bundle_streamlines"], 4))
+        if qb is not None:
+            row.update(
+                mean_length_mm=qb.summary["mean_streamline_length_mm"],
+                afd_volume_mm3=qb.summary["tract_afd_volume_mm3"],
+                afd_area_mm2=qb.summary["effective_afd_area_mm2"],
+                median_cut_flux=qb.summary["median_cut_flux"],
+            )
+        row.update(columns=i["n_columns"], backward_steps=i["backward"]["iterations"],
+                   forward_steps=i["forward"]["iterations"], seconds=i["seconds"])
+        rows.append(row)
         log.info("%s: %.2f expected streamlines", res.name, i["expected_bundle_streamlines"])
 
-    n_trapped = [0]
-
-    def trapped(what, names, vol):
-        # where the mass a stalled solve could not finish sits: open it over the T1
-        n_trapped[0] += 1
-        f = f"{stem}_desc-trapped{what}{n_trapped[0]}_map.nii.gz"
-        nib.save(nib.Nifti1Image(vol, sh_img.affine), f)
-        peak = nib.affines.apply_affine(sh_img.affine, np.unravel_index(np.argmax(vol), vol.shape))
-        log.warning("%s solve of %s did not finish: the mass left (%.1e of the start) is mapped in %s; "
-                    "most of it at (%.0f, %.0f, %.0f) mm", what, ", ".join(names), vol.sum(), f, *peak)
-
-    results = segment_bundles(chain, specs(), launches, tol=tol, max_mem=_budget(max_mem, chain, launches),
-                              on_result=write,
-                               on_trapped=trapped, verbose=verbose, clock=clock)
+    results = segment_bundles(chain, specs(), launches, tol=tol, max_mem=budget, on_result=write,
+                              on_trapped=trapped, verbose=verbose, clock=clock, keep_fields=flux)
+    if fixels:
+        with clock("fixels"):
+            write_fixels(chain, sh, results, launches, f"{stem}_desc-mcat_fixels", sh_img.affine, tol, budget,
+                         on_trapped=trapped, lobes=lobes, whole=whole)
     with open(f"{stem}_desc-mcat_table.tsv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t")
         w.writeheader()

@@ -236,7 +236,9 @@ def bundle_files(folder):
             continue
         pre = f[: -len("_desc-density_map.nii.gz")]
         get = lambda k: (pre + f"_desc-{k}.nii.gz") if op.exists(pre + f"_desc-{k}.nii.gz") else None  # noqa: E731
-        out[m.group(1)] = dict(prefix=pre, density=f, endpoints=get("endpoints_map"),
+        out[m.group(1)] = dict(prefix=pre, density=f, afd=get("afd_map"), tdimm=get("tdimm_map"),
+                               qharmonic=get("qharmonic_map"), coherence=get("coherence_map"),
+                               keff=get("keff_map"), endpoints=get("endpoints_map"),
                                start=get("start_mask"), end=get("end_mask"), include=get("include_mask"),
                                exclude=get("exclude_mask"), odf=get("visitodf_dwimap"))
     return out

@@ -40,6 +40,20 @@ class Geometry:
     t_nbr: np.ndarray
     t_bin: np.ndarray
     nb: int = 26
+    # Preorder prefix tree over hop sequences (for O(1) zero-ODF subtree skipping)
+    u_dir: np.ndarray = None
+    u_parent: np.ndarray = None
+    u_d1: np.ndarray = None
+    u_skip: np.ndarray = None
+    u_eptr: np.ndarray = None
+    e_vol: np.ndarray = None
+    e_nbr: np.ndarray = None
+    e_trip: np.ndarray = None
+    e_orig: np.ndarray = None
+    # Optional PTT (Parallel Transport Tractography) curvature & co-circularity weights
+    cone_w: np.ndarray = None
+    u_curv_w: np.ndarray = None
+    u_pt_dir: np.ndarray = None
 
     @property
     def n_dirs(self):
@@ -49,7 +63,125 @@ class Geometry:
         return np.argmin(self.vertices @ self.vertices.T, axis=1)
 
 
-def build_geometry(zooms, angle_max=35.0, step_vox=1.0) -> Geometry:
+def _build_prefix_tree(p_dirs, p_len, p_vol, p_nbr, p_trip, vertices=None, curv_sigma=0.0):
+    """Compile flat path emissions into a preorder prefix tree over hop sequences."""
+    P = p_dirs.shape[0]
+    children = [{}]
+    node_dir = [-1]
+    node_parent = [-1]
+    node_d1 = [-1]
+    node_emiss = [[]]
+
+    for p in range(P):
+        L = int(p_len[p])
+        cur = 0
+        d1 = int(p_dirs[p, 0])
+        for i in range(L):
+            d = int(p_dirs[p, i])
+            ch = children[cur].get(d)
+            if ch is None:
+                ch = len(children)
+                children[cur][d] = ch
+                children.append({})
+                node_dir.append(d)
+                node_parent.append(cur)
+                node_d1.append(d1)
+                node_emiss.append([])
+            cur = ch
+        node_emiss[cur].append(p)
+
+    n_nodes = len(children) - 1
+    u_dir = np.empty(n_nodes, np.int64)
+    u_parent = np.empty(n_nodes, np.int64)
+    u_d1 = np.empty(n_nodes, np.int64)
+    u_skip = np.empty(n_nodes, np.int64)
+    u_eptr = np.zeros(n_nodes + 1, np.int64)
+    e_orig = np.empty(P, np.int64)
+
+    old_to_pre = np.full(len(children), -1, np.int64)
+    stack = [(children[0][d], False) for d in sorted(children[0].keys(), reverse=True)]
+    pre_idx = 0
+    emiss_idx = 0
+    while stack:
+        nid, exiting = stack.pop()
+        if exiting:
+            u_skip[old_to_pre[nid]] = pre_idx
+            continue
+        u = pre_idx
+        pre_idx += 1
+        old_to_pre[nid] = u
+        u_dir[u] = node_dir[nid]
+        par = node_parent[nid]
+        u_parent[u] = -1 if par == 0 else old_to_pre[par]
+        u_d1[u] = node_d1[nid]
+        for p in node_emiss[nid]:
+            e_orig[emiss_idx] = p
+            emiss_idx += 1
+        u_eptr[u + 1] = emiss_idx
+        stack.append((nid, True))
+        for d in sorted(children[nid].keys(), reverse=True):
+            stack.append((children[nid][d], False))
+
+    u_curv_w = np.ones(n_nodes, np.float64)
+    u_pt_dir = u_dir.copy()
+    if vertices is not None and curv_sigma > 0.0:
+        sig_rad = np.deg2rad(float(curv_sigma))
+        inv_2s2 = 0.5 / max(sig_rad * sig_rad, 1e-12)
+        for u in range(n_nodes):
+            par = u_parent[u]
+            if par >= 0:
+                u_prev = vertices[u_dir[par]]
+                u_cur = vertices[u_dir[u]]
+                theta = np.arccos(np.clip(np.dot(u_prev, u_cur), -1.0, 1.0))
+                w = np.exp(-theta * theta * inv_2s2)
+                gpar = u_parent[par]
+                if gpar >= 0:
+                    # Co-circularity: penalise change in curvature vector (suppress S-wiggles)
+                    u_gprev = vertices[u_dir[gpar]]
+                    dk = (u_cur - u_prev) - (u_prev - u_gprev)
+                    w *= np.exp(-np.dot(dk, dk) * inv_2s2)
+                u_curv_w[u] = w
+                # Parallel-transported geodesic continuation direction into neighbour voxel
+                u_first = vertices[u_d1[u]]
+                c_dot = np.dot(u_first, u_cur)
+                v_refl = 2.0 * c_dot * u_cur - u_first
+                v_extrap = 0.5 * u_cur + 0.5 * v_refl
+                u_pt_dir[u] = int(np.argmax(vertices @ v_extrap))
+
+    return (u_dir, u_parent, u_d1, u_skip, u_eptr,
+            np.ascontiguousarray(p_vol[e_orig]),
+            np.ascontiguousarray(p_nbr[e_orig]),
+            np.ascontiguousarray(p_trip[e_orig]),
+            e_orig,
+            u_curv_w,
+            u_pt_dir)
+
+
+def class_chord_lengths(geo: Geometry, zooms=None):
+    """Expected inter-voxel step length (in voxel units if ``zooms is None``, else in mm)
+    for each of the 26 direction classes, weighted by path volume over each class's cone."""
+    nbr_disp = OFFSETS.astype(np.float64)
+    if zooms is not None:
+        nbr_disp = nbr_disp * np.abs(np.asarray(zooms, float))[None, :]
+    nbr_len = np.linalg.norm(nbr_disp, axis=1)
+    p_len = nbr_len[geo.p_nbr]
+    V = geo.n_dirs
+    d1 = geo.p_dirs[:, 0]
+    vol_d1 = np.bincount(d1, weights=geo.p_vol, minlength=V)
+    len_d1 = np.bincount(d1, weights=geo.p_vol * p_len, minlength=V)
+    out = np.zeros(geo.nb)
+    for b in range(geo.nb):
+        es = geo.bin_idx[geo.bin_ptr[b]:geo.bin_ptr[b + 1]]
+        w_tot = l_tot = 0.0
+        for e in es:
+            ds = geo.cone_idx[geo.cone_ptr[e]:geo.cone_ptr[e + 1]]
+            w_tot += vol_d1[ds].sum()
+            l_tot += len_d1[ds].sum()
+        out[b] = l_tot / max(w_tot, 1e-30)
+    return out
+
+
+def build_geometry(zooms, angle_max=35.0, step_vox=1.0, curv_sigma=0.0) -> Geometry:
     """Paths for hops of ``step_vox`` voxels (of the smallest voxel side) turning less than
     ``angle_max`` degrees, on DSI Studio's 642-direction sphere; anisotropic voxels are exact."""
     V = np.ascontiguousarray(default_sphere(), np.float64)
@@ -72,6 +204,17 @@ def build_geometry(zooms, angle_max=35.0, step_vox=1.0) -> Geometry:
     if not np.allclose(np.clip(hi - lo, 0, None).prod(1), vol, rtol=1e-9, atol=1e-14):
         raise RuntimeError("path start boxes disagree with MITTENS's path volumes")
     ip, ix, _ = table.turning_matrix()
+    cone_ptr = np.asarray(ip, np.int64)
+    cone_idx = np.asarray(ix, np.int64)
+    cone_w = np.ones(cone_idx.size, np.float64)
+    if curv_sigma > 0.0:
+        sig_rad = np.deg2rad(float(curv_sigma))
+        inv_2s2 = 0.5 / max(sig_rad * sig_rad, 1e-12)
+        for d0 in range(len(V)):
+            k0, k1 = cone_ptr[d0], cone_ptr[d0 + 1]
+            dots = np.clip(V[cone_idx[k0:k1]] @ V[d0], -1.0, 1.0)
+            thetas = np.arccos(dots)
+            cone_w[k0:k1] = np.exp(-thetas * thetas * inv_2s2)
     bins = OFFSETS / np.linalg.norm(OFFSETS, axis=1, keepdims=True)
     vbin = np.argmax(V @ bins.T, axis=1).astype(np.int64)
     bin_idx = np.argsort(vbin, kind="stable").astype(np.int64)
@@ -80,10 +223,15 @@ def build_geometry(zooms, angle_max=35.0, step_vox=1.0) -> Geometry:
     key = dirs[:, 0] * (26 * 26) + nbr * 26 + vbin[last]
     ukey, trip = np.unique(key, return_inverse=True)
     d1 = ukey // (26 * 26)
-    return Geometry(V, np.asarray(ip, np.int64), np.asarray(ix, np.int64), vol, dirs, length, nbr,
-                    total, lo, hi, vbin, bin_ptr, bin_idx, trip.astype(np.int64),
+    trip = trip.astype(np.int64)
+    tree = _build_prefix_tree(dirs, length, vol, nbr, trip, vertices=V, curv_sigma=curv_sigma)
+    u_dir, u_parent, u_d1, u_skip, u_eptr, e_vol, e_nbr, e_trip, e_orig, u_curv_w, u_pt_dir = tree
+    return Geometry(V, cone_ptr, cone_idx, vol, dirs, length, nbr,
+                    total, lo, hi, vbin, bin_ptr, bin_idx, trip,
                     np.searchsorted(d1, np.arange(len(V) + 1)).astype(np.int64),
-                    ((ukey // 26) % 26).astype(np.int64), (ukey % 26).astype(np.int64))
+                    ((ukey // 26) % 26).astype(np.int64), (ukey % 26).astype(np.int64), 26,
+                    u_dir, u_parent, u_d1, u_skip, u_eptr, e_vol, e_nbr, e_trip, e_orig,
+                    cone_w, u_curv_w, u_pt_dir)
 
 
 def _sh_basis(vertices, n_coef):
@@ -99,22 +247,61 @@ def _sh_basis(vertices, n_coef):
                                       return_inv=False), np.float64)
 
 
-def pmf_and_cone_mass(sh_rows, geo: Geometry, chunk=20000):
-    """X: fODF on the sphere, clipped at 0, values below PMF_THRESHOLD x max zeroed,
-    normalised to sum 1 per voxel (rows of zeros stay zero); Y: X summed over each cone."""
+def pmf_and_cone_mass(sh_rows, geo: Geometry, chunk=20000, fod_thresh=PMF_THRESHOLD,
+                      fod_power=1.0, cyl_nbr=None, probe_radius=0.0):
+    """X: fODF on the sphere, clipped at 0, values below ``fod_thresh`` x max zeroed,
+    raised to ``fod_power`` (PTT dataSupportExponent), normalised to sum 1 per voxel;
+    Y: X summed over each cone (weighted by ``geo.cone_w``)."""
     import scipy.sparse as sps
+    from . import kernel as K
 
     B = _sh_basis(geo.vertices, sh_rows.shape[1])
     X = np.empty((sh_rows.shape[0], geo.n_dirs), np.float32)
     for s in range(0, sh_rows.shape[0], chunk):
         sf = np.maximum(np.asarray(sh_rows[s:s + chunk], np.float64) @ B, 0.0)
-        sf[sf < PMF_THRESHOLD * sf.max(1, keepdims=True)] = 0.0
+        sf[sf < fod_thresh * sf.max(1, keepdims=True)] = 0.0
+        if fod_power != 1.0:
+            np.power(sf, float(fod_power), out=sf, where=sf > 0.0)
         tot = sf.sum(1, keepdims=True)
         X[s:s + chunk] = np.divide(sf, tot, out=np.zeros_like(sf), where=tot > 0)
-    C = sps.csr_matrix((np.ones(geo.cone_idx.size), geo.cone_idx, geo.cone_ptr),
-                       shape=(geo.n_dirs,) * 2)
+    if probe_radius > 0.0 and cyl_nbr is not None and len(X) > 0:
+        offs = OFFSETS.astype(np.float64)
+        offs_n2 = (offs ** 2).sum(1)[:, None]
+        o_par = np.abs(offs @ geo.vertices.T)                      # (26, V)
+        o_perp2 = np.maximum(offs_n2 - o_par ** 2, 0.0)            # (26, V)
+        r2 = max(float(probe_radius) ** 2, 1e-6)
+        W = np.exp(-0.5 * o_perp2 / r2 - 0.5 * (o_par ** 2) / 1.0)
+        # Keep top 6 cylinder neighbours per direction
+        top_n = np.argsort(W, axis=0)[-6:].T.copy()                # (V, 6)
+        top_w = np.take_along_axis(W.T, top_n, axis=1).copy()      # (V, 6)
+        X = K._cylindrical_probe_filter(X, np.asarray(cyl_nbr, np.int32),
+                                        top_n.astype(np.int32), top_w.astype(np.float32),
+                                        float(fod_thresh))
+    cw = geo.cone_w if geo.cone_w is not None else np.ones(geo.cone_idx.size)
+    C = sps.csr_matrix((cw, geo.cone_idx, geo.cone_ptr), shape=(geo.n_dirs,) * 2)
     Y = np.asarray(C @ X.T.astype(np.float64)).T.astype(np.float32) if len(X) else X.copy()
     return X, Y
+
+
+def vertex_visits(density_class, sh_rows, geo: Geometry):
+    """Expected visits per sphere direction, (n, V): a voxel's visits by direction class
+    (density_class, (n, 26)) spread over the class's directions as the chain assumes,
+    q ~ X Y (kernel.class_q, with its fallbacks), from the fODF there (sh_rows, (n, ncoef)).
+    Rows sum to the voxel's visits.  Not symmetrised: a direction is the walker's heading."""
+    import scipy.sparse as sps
+
+    V = geo.n_dirs
+    cls = sps.csr_matrix((np.ones(V), (np.arange(V), geo.vbin)), shape=(V, geo.nb))
+    X, Y = pmf_and_cone_mass(sh_rows, geo)
+    X, Y = X.astype(np.float64), Y.astype(np.float64)
+    q = np.zeros_like(X)
+    todo = np.ones((len(X), geo.nb), bool)
+    for w in (X * Y, Y, np.ones_like(X)):           # class_q's fallbacks
+        tot = np.asarray(cls.T @ w.T).T              # (n, 26)
+        use = todo & (tot > 0)
+        q += np.where(use[:, geo.vbin], w / np.where(tot > 0, tot, 1)[:, geo.vbin], 0)
+        todo &= ~use
+    return np.asarray(density_class, np.float64)[:, geo.vbin] * q
 
 
 def visitation_odf(density_class, sh_rows, geo: Geometry, sh_order=8, chunk=20000):
@@ -123,28 +310,17 @@ def visitation_odf(density_class, sh_rows, geo: Geometry, sh_order=8, chunk=2000
 
     density_class (n, 26): expected visits by direction class, per voxel; sh_rows (n, ncoef):
     the fODF there.  Within a class the direction is spread as the chain assumes,
-    q ~ X Y (kernel.class_q).  The ODF is antipodally symmetrised and in expected visits per
-    steradian, so it integrates to the voxel's density (c_00 = density / (2 sqrt(pi)))."""
-    import scipy.sparse as sps
+    q ~ X Y (kernel.class_q; vertex_visits).  The ODF is antipodally symmetrised and in
+    expected visits per steradian, so it integrates to the voxel's density
+    (c_00 = density / (2 sqrt(pi)))."""
     from dipy.core.sphere import Sphere
     from dipy.reconst.shm import sh_to_sf_matrix
 
-    V = geo.n_dirs
     _, inv = sh_to_sf_matrix(Sphere(xyz=geo.vertices), sh_order_max=sh_order, return_inv=True)
-    cls = sps.csr_matrix((np.ones(V), (np.arange(V), geo.vbin)), shape=(V, geo.nb))
     anti = geo.antipode()
     out = np.zeros((len(sh_rows), inv.shape[1]), np.float32)
     for s in range(0, len(sh_rows), chunk):
-        X, Y = pmf_and_cone_mass(sh_rows[s:s + chunk], geo)
-        X, Y = X.astype(np.float64), Y.astype(np.float64)
-        q = np.zeros_like(X)
-        todo = np.ones((len(X), geo.nb), bool)
-        for w in (X * Y, Y, np.ones_like(X)):       # class_q's fallbacks
-            tot = np.asarray(cls.T @ w.T).T          # (n, 26)
-            use = todo & (tot > 0)
-            q += np.where(use[:, geo.vbin], w / np.where(tot > 0, tot, 1)[:, geo.vbin], 0)
-            todo &= ~use
-        f = np.asarray(density_class[s:s + chunk], np.float64)[:, geo.vbin] * q
+        f = vertex_visits(density_class[s:s + chunk], sh_rows[s:s + chunk], geo)
         c = (0.5 * (f + f[:, anti])) @ inv
         # exact integral (the sphere's vertices do not cover equal solid angles)
         c00 = f.sum(1) / (2 * np.sqrt(np.pi))
