@@ -295,3 +295,74 @@ Benchmarked on `sub-22449_ses-01` using the `Schaefer2018 (100 Parcels, 7 Networ
 - **Figure 5 (`fig5_connectome_matrices.png`):** Six-panel summary on `Schaefer2018 (100 Parcels, 7 Networks)` for `sub-22449_ses-01`, showing (A) the length-debiased Analytical SIFT2 cross-sectional area connectome $\mathcal{A}_{\text{AFD}}(i, j)$ in $\text{mm}^2$, (B) the AFD-calibrated tract volume connectome $V_{\text{AFD}}(i, j)$ in $\text{mm}^3$, (C) the exact Markov expected path length matrix $\bar{L}_{ij}$ in $\text{mm}$ (clearly separating shorter intra-hemispheric blocks from longer inter-hemispheric commissural off-diagonal blocks), (D) the seed-launched expected streamline count connectome $N_{\text{streamlines}}(i, j)$, (E) the $7 \times 7$ resting-state network block matrix of $\mathcal{A}_{\text{AFD}}$, and (F) edge-wise scatter comparing $\mathcal{A}_{\text{AFD}}(i, j)$ against $N_{\text{streamlines}}(i, j)$ colored by path length $\bar{L}_{ij}$.
 
 ![MCAT Analytical SIFT2 Structural Connectivity Matrices on Schaefer-100](fig5_connectome_matrices.png)
+
+---
+
+### 8. Parallel Transport Tractography-Informed Transitions (`MCAT-PTT`, [`src/mcat/geometry.py`](../../src/mcat/geometry.py), [`src/mcat/kernel.py`](../../src/mcat/kernel.py), [`src/mcat/chain.py`](../../src/mcat/chain.py))
+
+#### 8.1 Mathematical Formulation (`ChainConfig.ptt()`)
+
+Parallel Transport Tractography (PTT, Aydogan & Shi 2021; `trekker`) achieves cleaner laminar sheets and higher crossing-fiber selectivity than `iFOD1`/`iFOD2` through four physical mechanisms that we embed directly into MCAT's 26-class stencil transition matrix $Q$ with **zero extra states**:
+
+1. **Gaussian Geodesic Curvature & Co-Circular Intra-Voxel Tree Weighting (`curv_sigma`):**
+   Replaces the flat step-function cone $\mathbf{1}\{\theta(e, d) \le \theta_{\max}\}$ with a smooth Gaussian geodesic curvature prior $W_\kappa(e, d) = \exp(-\theta(e, d)^2 / (2\sigma_\kappa^2))$, and weights each multi-hop intra-voxel prefix-tree node $u = (d_0, d_1, \dots, d_k)$ by both hop curvature and discrete curvature-change $\exp(-\|\Delta\boldsymbol{\kappa}\|^2 / (2\sigma_\kappa^2))$ across consecutive intra-voxel hops, suppressing S-shaped wiggles while preserving smooth C-shaped curves.
+2. **Parallel-Transported Geodesic Look-Ahead (`u_pt_dir`):**
+   Along a constant-curvature arc with penultimate intra-voxel direction $u_{d_1}$ and final chord direction $u_d$, parallel-transporting the frame predicts a next-voxel tangent rotated by another $\Delta\theta$ in the osculating plane:
+   $$\hat{t}_{\text{next}}(d_1, d) = \operatorname{normalize}\!\bigl(2(u_{d_1}\cdot u_d)\,u_d - u_{d_1}\bigr).$$
+   Evaluating the neighbor voxel's fODF $F_{v'}$ at `u_pt_dir[u]` rewards co-circular continuation along curved tracts (`ARC_L`, `CGC`) and suppresses zig-zag leakage across crossings.
+3. **Topographic Cylindrical Probe Filtering (`probe_radius`):**
+   Convolves each stencil class $d$'s directional support across its 26-neighborhood with a spatial cylinder kernel weighted by $\exp(-r_\perp^2 / (2 R_{\text{probe}}^2))$ in the normal plane $u_d^\perp$ and $\exp(-s_\parallel^2 / (2 L_{\text{probe}}^2))$ along $u_d$, amplifying spatially coherent laminar sheets and attenuating isolated noise peaks.
+4. **Sharp Nonlinear Data Support (`fod_thresh`, `fod_power`) + Sub-Stochastic Probe Rejection (`stop_mass`):**
+   Evaluates $(F(v, d) - \tau_{\text{fod}})_+^p$ ($p > 1$, PTT's `dataSupportExponent`) and pairs it with sub-stochastic cone mass (`stop_mass=True`) so walkers whose forward cylindrical probe loses support terminate cleanly in place rather than scattering into perpendicular crossing fibers.
+
+---
+
+#### 8.2 3D Acute Crossing-Fiber Phantom Ablation ($42^\circ$ Crossing, 26-Class Stencil Chain)
+
+Tested on a 3D $42^\circ$ acute crossing-fiber phantom (where the inter-fiber angle $42^\circ < 45^\circ$ lies inside `iFOD2`'s turning cone) using the standard 26-class stencil chain (zero extra states):
+
+| Configuration | Nonzeros $\text{nnz}(Q)$ | True Fiber-1 Completion | Spurious Fiber-2 Leakage | Crossing Leakage Share | Selectivity Ratio ($P_{\text{true}} / P_{\text{leak}}$) |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| **Baseline MCAT (`iFOD2`)** | `190,994` | `28.84%` | `32.05%` | `52.63%` | `0.900×` |
+| **`+ Curvature & Co-Circular` ($\sigma_\kappa = 16^\circ$)** | `190,944` | **`42.57%`** | **`28.69%`** | **`40.26%`** | **`1.484×`** |
+| **`+ Sharp Support` ($\tau = 0.08, p = 1.6$)** | `160,580` | `30.14%` | `34.71%` | `53.52%` | `0.868×` |
+| **`+ Cylindrical Probe` ($R_{\text{probe}} = 0.5\text{ vox}$)** | `194,398` | `26.99%` | `32.66%` | `54.75%` | `0.826×` |
+| **`MCAT-PTT (Combined)`** | **`120,118` (`-37.1%`)** | **`45.32%` (`1.57×`)** | `30.55%` | **`40.26%`** | **`1.484×`** |
+
+---
+
+#### 8.3 Human Brain Benchmark (`sub-22449_ses-01`: `CST_L`, `ARC_L`, `CGC_R`)
+
+Evaluated on `sub-22449_ses-01` (`130,116` white-matter voxels, `3,383,016` states) comparing `ChainConfig()` (Baseline `iFOD2`) against `ChainConfig.ptt()` (`fod_thresh=0.08`, `fod_power=1.5`, `curv_sigma=18°`, `probe_radius=0.35`, `stop_mass=True`):
+
+| Metric | Baseline MCAT (`iFOD2`) | `MCAT-PTT` (`ChainConfig.ptt()`) | Change / Improvement |
+| :--- | ---: | ---: | :--- |
+| **Whole-Brain Transitions $\text{nnz}(Q)$** | `210,008,843` (`2.11 GB`) | **`145,745,145` (`1.51 GB`)** | **`-30.6%` transitions / `-28.5%` RAM** |
+| **Trapped Overlength States Killed** | `8` states | **`0` states** | **100% loop-free without pre-pass** |
+| **Whole-Brain Unconditioned Solve (`_whole`)** | `42.26 s` (`224` bwd / `745` fwd) | **`9.60 s` (`169` bwd / `175` fwd)** | **`4.40×` faster** |
+| **`CST_L` Solve Time / Steps** | `26.47 s` (`168` / `173`) | **`18.07 s` (`159` / `164`)** | **`1.46×` faster** |
+| **`CST_L` Streamlines / SIFT2 Area** | `98.2` / `13.64 mm²` | **`158.8` / `22.50 mm²`** | **`+61.7%` yield / `+65.0%` SIFT2 area** |
+| **`CST_L` 90%-Mass Volume / Trunk Coherence / $K_{\text{eff}}$** | `33.68 cm³` / `0.605` / `7.64` | **`25.18 cm³` / `0.655` / `6.21`** | **`-25.2%` halo volume**, `+0.050` coh, `-1.43` $K_{\text{eff}}$ |
+| **`ARC_L` Solve Time / Steps** | `35.28 s` (`164` / `164`) | **`24.02 s` (`156` / `156`)** | **`1.47×` faster** |
+| **`ARC_L` Streamlines / SIFT2 Area** | `258.6` / `22.51 mm²` | **`469.6` / `36.98 mm²`** | **`+81.6%` yield / `+64.3%` SIFT2 area** |
+| **`ARC_L` 90%-Mass Volume / Trunk Coherence / $K_{\text{eff}}$** | `39.53 cm³` / `0.631` / `8.01` | **`29.17 cm³` / `0.690` / `6.58`** | **`-26.2%` halo volume**, `+0.060` coh, `-1.43` $K_{\text{eff}}$ |
+| **`CGC_R` Solve Time / Steps** | `60.55 s` (`233` / `825`) | **`15.20 s` (`157` / `160`)** | **`3.98×` faster** |
+| **`CGC_R` Streamlines / SIFT2 Area** | `131.7` / `11.82 mm²` | **`222.2` / `19.40 mm²`** | **`+68.7%` yield / `+64.1%` SIFT2 area** |
+| **`CGC_R` 90%-Mass Volume / Trunk Coherence / $K_{\text{eff}}$** | `19.84 cm³` / `0.773` / `5.32` | **`15.54 cm³` / `0.816` / `4.41`** | **`-21.7%` halo volume**, `+0.043` coh, `-0.91` $K_{\text{eff}}$ |
+
+#### 8.4 Plain-English Interpretation: Speed, Coherence, and Bundle Mass Concentration
+
+1. **Why is `MCAT-PTT` $1.5\times$–$4.4\times$ faster than baseline MCAT?**
+   - **30.6% fewer connections to multiply at every step:** Raising the fODF floor (`0.05` $\to$ `0.08`), sharpening peaks ($p = 1.5$), and attenuating wide-angle turns prune away weak, noisy side-transitions (`210.0M` $\to$ `145.7M` nonzeros, `-30.6%`), so every solver iteration does 30.6% less work.
+   - **No recirculating "eddies" or loops (`745` $\to$ `175` forward iterations):** In baseline `iFOD2`, walkers can take consecutive $35^\circ$ turns in the same direction and loop around inside crossings (`8` states exceed $250\text{ mm}$, and the whole-brain forward solve takes `745` iterations / `CGC_R` takes `825` iterations for recirculating walkers to drain). With PTT's curvature penalty and `stop_mass`, walkers travel ballistically along coherent fiber sheets and stop cleanly at dead ends (`0` trapped states; forward convergence drops from `745` $\to$ `175` steps on `_whole` and `825` $\to$ `160` steps on `CGC_R`).
+2. **How to interpret the Laminar Coherence curves (Panel B):**
+   - At each voxel, walkers can step toward up to 26 neighbor directions. **Directional flux coherence** measures whether all walkers in that voxel march in lockstep in one direction ($\text{Coherence} \to 1.0$, like cars on a highway) or scatter into many directions at once ($\text{Coherence} \to 0.0$, like people fanning out in a plaza).
+   - **Effective branching degree $K_{\text{eff}} \in [1, 26]$** tells you *how many neighbor voxels* a typical walker splits its probability across at each step.
+   - Under `MCAT-PTT`, trunk coherence rises across all bundles (`CST_L`: `0.605` $\to$ `0.655`; `ARC_L`: `0.631` $\to$ `0.690`; `CGC_R`: `0.773` $\to$ `0.816`) and $K_{\text{eff}}$ drops by ~`1.4` neighbors (`ARC_L`: `8.01` $\to$ `6.58`; `CST_L`: `7.64` $\to$ `6.21`; `CGC_R`: `5.32` $\to$ `4.41`), while preserving genuine anatomical fanning at the cortical terminations ($q \to 0$ and $q \to 1$).
+3. **How to interpret the Bundle Mass Concentration curves (Panel C):**
+   - A classic weakness of `iFOD2` probabilistic tractography is a **fuzzy "cloud" or halo** around the tract: some walkers leak a few steps into crossing fibers, wander around, and still reach the target ROI (inflating the bundle's volume), while many other walkers leak into crossings and get lost completely (lowering streamline yield).
+   - Panel C sorts voxels from highest to lowest bundle density and asks: *"How much white-matter volume ($\text{cm}^3$) is needed to hold 90% of the bundle ($V_{90}$)?"*
+   - Under `MCAT-PTT`, **90% of the bundle is packed into 22%–26% less white-matter volume** (`ARC_L`: `39.5 cm³` $\to$ `29.2 cm³`; `CST_L`: `33.7 cm³` $\to$ `25.2 cm³`; `CGC_R`: `19.8 cm³` $\to$ `15.5 cm³`), *and simultaneously* **62%–82% more walkers successfully reach the target ROI** (`ARC_L`: `259` $\to$ `470` streamlines; `CST_L`: `98` $\to$ `159`; `CGC_R`: `132` $\to$ `222`). Walkers stay focused inside the true anatomical sheet rather than leaking into a diffuse off-tract cloud.
+
+![MCAT-PTT vs Baseline MCAT Comparison](fig6_ptt_comparison.png)
+

@@ -271,3 +271,21 @@ def test_build_connectome_phantom(crossing_phantom):
     assert conn.mean_length_mm[0, 1] > 14.0 and conn.mean_length_mm[2, 3] > 14.0
 
 
+def test_ptt_chain_config(crossing_phantom):
+    sh, zooms, transient, absorb, seeds = crossing_phantom
+    cfg_ptt = ChainConfig.ptt(fod_thresh=0.08, fod_power=1.6, curv_sigma=16.0, probe_radius=0.5, stop_mass=1e-4)
+    chain_ptt = Chain.build(sh, zooms, transient, absorb, cfg_ptt)
+    chain_base = Chain.build(sh, zooms, transient, absorb, ChainConfig())
+    # PTT prunes weak/high-curvature transitions while keeping positive mass
+    assert 0 < chain_ptt.n_transitions < chain_base.n_transitions
+    launches_ptt = prepare_launches(chain_ptt, seeds)
+    end_right = np.zeros(transient.shape, bool)
+    end_right[-2, 4:8, 1:-1] = True
+    start_left = np.zeros(transient.shape, bool)
+    start_left[1, 4:8, 1:-1] = True
+    res = segment_bundles(chain_ptt, [dict(name="H", start=start_left, end=end_right)], launches_ptt)["H"]
+    assert res.density_t.sum() > 0.0
+    assert res.flux26 is not None
+
+
+

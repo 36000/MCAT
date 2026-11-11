@@ -37,7 +37,18 @@ class ChainConfig:
     moments: bool = False             # spatial first moments (sub-voxel position, see moments.py)
     moment_closure: str = "standard"  # "standard", "positivity" (alpha=1/sqrt(3)), or "transverse" (2D plane)
     stop_mass: float = 0.0            # MITTENS stopping regularizer tau in Z_v(e) + tau
+    fod_thresh: float = 0.05          # relative fODF floor (minFODamp / peak)
+    fod_power: float = 1.0            # PTT dataSupportExponent p: X_v(d) ~ max(sf, 0)^p
+    curv_sigma: float = 0.0           # PTT curvature prior & co-circular look-ahead sigma (degrees; 0 = flat cone)
+    probe_radius: float = 0.0         # PTT cylindrical probe radius in voxels (0 = single-voxel evaluation)
     chunk: int = 256                  # voxels per build chunk
+
+    @classmethod
+    def ptt(cls, angle: float = 35.0, fod_thresh: float = 0.08, fod_power: float = 1.5,
+            curv_sigma: float = 18.0, probe_radius: float = 0.5, stop_mass: float = 1e-4, **kw):
+        """Parallel-Transport Tractography (PTT / Trekker-informed) Markov chain configuration."""
+        return cls(angle=angle, fod_thresh=fod_thresh, fod_power=fod_power,
+                   curv_sigma=curv_sigma, probe_radius=probe_radius, stop_mass=stop_mass, **kw)
 
     def key(self):
         d = asdict(self)
@@ -46,6 +57,14 @@ class ChainConfig:
             d.pop("stop_mass", None)
         if d.get("moment_closure", "standard") == "standard":
             d.pop("moment_closure", None)
+        if d.get("fod_thresh", 0.05) == 0.05:
+            d.pop("fod_thresh", None)
+        if d.get("fod_power", 1.0) == 1.0:
+            d.pop("fod_power", None)
+        if d.get("curv_sigma", 0.0) == 0.0:
+            d.pop("curv_sigma", None)
+        if d.get("probe_radius", 0.0) == 0.0:
+            d.pop("probe_radius", None)
         return d
 
 
@@ -130,7 +149,7 @@ class Chain:
         self.aindex[self.a_lin] = np.arange(self.a_lin.size)
         self.a_class = cls_p.ravel()[self.a_lin].astype(np.int64)
 
-        self.geo = geo = build_geometry(zooms, cfg.angle, cfg.step)
+        self.geo = geo = build_geometry(zooms, cfg.angle, cfg.step, curv_sigma=cfg.curv_sigma)
         self.nb = geo.nb
         need = np.flatnonzero((trans_p | (a_mask & (label.reshape(pshape) == K.ABSORBING))).ravel())
         sh_p = np.zeros(pshape + (sh.shape[-1],), np.float32)
@@ -139,10 +158,16 @@ class Chain:
         del sh_p
         has = np.any(rows != 0, axis=1)
         need, rows = need[has], rows[has]
-        self.X, self.Y = pmf_and_cone_mass(rows, geo)
-        del rows
         self.xrow = np.full(label.size, -1, np.int64)
         self.xrow[need] = np.arange(need.size)
+        cyl_nbr = None
+        if cfg.probe_radius > 0.0:
+            nb_lin = need[:, None] + self.noff[None, :]
+            is_wm = self.label[nb_lin] == K.TRANSIENT
+            cyl_nbr = np.where(is_wm, self.xrow[nb_lin], -1).astype(np.int32)
+        self.X, self.Y = pmf_and_cone_mass(rows, geo, fod_thresh=cfg.fod_thresh, fod_power=cfg.fod_power,
+                                           cyl_nbr=cyl_nbr, probe_radius=cfg.probe_radius)
+        del rows
         log.info("fODFs for %d voxels (%d white matter), %d paths, in %.1fs", need.size,
                  self.t_lin.size, geo.p_vol.size, time.time() - t0)
 
@@ -176,6 +201,7 @@ class Chain:
         self.tmpl_n, self.tmpl_b = tn, tb
         targs = self._kargs_tree()
         tau = float(self.cfg.stop_mass)
+        use_ptt = self.cfg.curv_sigma > 0.0
         Ns = Nt * nb
         q_slot, q_w = _Grower(np.uint8 if tn.shape[1] <= 256 else np.uint16), _Grower(np.float64)
         r_ind, r_w = _Grower(np.int32), _Grower(np.float64)
@@ -187,7 +213,11 @@ class Chain:
             vl = self.t_lin[s:s + chunk]
             out = np.empty((vl.size, nb, 26, nb))
             dead = np.empty((vl.size, nb))
-            K.chunk_blocks_tree(vl, *targs, self.geo.bin_ptr, self.geo.bin_idx, out, dead, tau)
+            if use_ptt:
+                K.chunk_blocks_tree_ptt(vl, *targs, self.geo.cone_w, self.geo.u_curv_w, self.geo.u_pt_dir,
+                                        self.geo.bin_ptr, self.geo.bin_idx, out, dead, tau)
+            else:
+                K.chunk_blocks_tree(vl, *targs, self.geo.bin_ptr, self.geo.bin_idx, out, dead, tau)
             qp, qs, qw, rp, ri, rw, dd = K.stencil_rows(vl, out, dead, self.label, self.noff, self.aindex, slot_of)
             del out
             r0, r1 = s * nb, (s + vl.size) * nb
@@ -246,8 +276,13 @@ class Chain:
     def launch_halves(self, seed_vlin, dptr, dirs, out, dead):
         """First exits of half-walks; out (H, 26, nb, ncomp)."""
         o = np.empty(out.shape[:3])
-        K.launch_batch_tree(seed_vlin, dptr, dirs, *self._kargs_tree(), self.nb, o, dead,
-                            float(self.cfg.stop_mass))
+        if self.cfg.curv_sigma > 0.0:
+            K.launch_batch_tree_ptt(seed_vlin, dptr, dirs, *self._kargs_tree(),
+                                    self.geo.cone_w, self.geo.u_curv_w, self.geo.u_pt_dir,
+                                    self.nb, o, dead, float(self.cfg.stop_mass))
+        else:
+            K.launch_batch_tree(seed_vlin, dptr, dirs, *self._kargs_tree(), self.nb, o, dead,
+                                float(self.cfg.stop_mass))
         out[..., 0] = o
 
     def release_pmfs(self):

@@ -508,3 +508,118 @@ conn.streamline_count    # (R, R) seed-launched expected streamlines
 
 ![MCAT Analytical SIFT2 Structural Connectivity Matrices on Schaefer-100](benchmarks/fig5_connectome_matrices.png)
 
+### 10.6 Parallel Transport Tractography-informed transitions (`MCAT-PTT`)
+
+Why does Parallel Transport Tractography (PTT, Aydogan & Shi 2021; `trekker`) produce cleaner
+laminar sheets and higher anatomical accuracy than `iFOD1`/`iFOD2`?  In baseline `iFOD2`,
+the weight of an intra-voxel sub-voxel hop sequence $\mathbf{d} = (d_1, \dots, d_L)$ inside
+voxel $v$ exiting into neighbor voxel $v'$ given incoming direction $e$ is:
+$$W_{\text{base}}(e \to d_1 \to \dots \to d_L \to v') = \frac{\mathbf{1}\{\theta(e, d_1) \le \theta_{\max}\}\, X_v(d_1)}{Y_v(e)} \cdot V_{\text{box}}(\mathbf{d}) \prod_{i=2}^{L} \frac{\mathbf{1}\{\theta(d_{i-1}, d_i) \le \theta_{\max}\}\, X_v(d_i)}{Y_v(d_{i-1})} \cdot Y_{v'}(d_L).$$
+This baseline model uses a hard-edged uniform turning cone $\mathbf{1}\{\theta \le \theta_{\max}\}$
+(treating a $34^\circ$ turn identically to $0^\circ$), linear point-evaluated fODF values
+$X_v(d) \propto \text{fODF}_v(d)^1$, memoryless curvature across intra-voxel hops (allowing
+S-shaped zig-zags), a chord-only look-ahead $Y_{v'}(d_L)$ that ignores the arc's curvature,
+and forced renormalization at dead ends.
+
+Remarkably, **every core ingredient of PTT can be absorbed directly into MCAT's 26-class
+stencil transition matrix $Q$ at zero extra states**, via `ChainConfig.ptt()`:
+
+1. **Nonlinear data support (`fod_thresh`, `fod_power`) & topographic cylindrical probe filtering (`probe_radius`):**
+   In `geometry.pmf_and_cone_mass` and `kernel._cylindrical_probe_filter`, each voxel's spherical
+   harmonic synthesis is thresholded at $\tau_{\text{fod}} \max_d \text{fODF}_v(d)$, raised to
+   PTT's `dataSupportExponent` $p > 1$:
+   $$X_v^{(0)}(d) \propto \bigl(\text{fODF}_v(d) - \tau_{\text{fod}}\max_{d'}\text{fODF}_v(d')\bigr)_+^p,$$
+   and convolved across its 26 lattice neighbors $\mathbf{o}_n$ with a 3D cylindrical Gaussian
+   probe kernel weighted by perpendicular distance $r_\perp^2(n, d) = \|\mathbf{o}_n\|^2 - (\mathbf{o}_n \cdot \mathbf{u}_d)^2$
+   in the normal plane $\mathbf{u}_d^\perp$ and longitudinal distance $s_\parallel(n, d) = |\mathbf{o}_n \cdot \mathbf{u}_d|$
+   along the tangent $\mathbf{u}_d$:
+   $$W_{\text{cyl}}(n, d) = \exp\!\left(-\frac{r_\perp^2(n, d)}{2 R_{\text{probe}}^2} - \frac{s_\parallel^2(n, d)}{2 L_{\text{probe}}^2}\right).$$
+   Coherent laminar fiber sheets have aligned fODF support in their lateral disk neighbors
+   ($\mathbf{u}_d^\perp$) and longitudinal tube neighbors ($\mathbf{u}_d$), reinforcing
+   $X_v^{\text{PTT}}(d)$ while suppressing isolated noisy peaks.
+2. **Smooth Gaussian geodesic curvature prior (`curv_sigma`):**
+   In `geometry.build_geometry`, `kernel._incoming_norm_ptt`, and `kernel._apply_incoming_ptt`,
+   the flat step-function cone $\mathbf{1}\{\theta(a, d) \le \theta_{\max}\}$ is replaced by a
+   Gaussian geodesic curvature kernel `cone_w`:
+   $$W_\kappa(a, d) = \exp\!\left(-\frac{\theta(a, d)^2}{2\sigma_\kappa^2}\right) \mathbf{1}\{\theta(a, d) \le \theta_{\max}\}.$$
+   When two fibers cross at an acute angle ($42^\circ < 45^\circ$), baseline `iFOD2` gives the
+   $42^\circ$ crossing lobe the exact same cone weight ($1.0$) as the $0^\circ$ straight
+   continuation; with $\sigma_\kappa = 18^\circ$, the $42^\circ$ crossing turn is attenuated
+   by $\exp(-(42/18)^2 / 2) \approx 0.066$ ($15\times$ suppression).
+3. **Co-circular intra-voxel path weighting (`u_curv_w`) & parallel-transported geodesic look-ahead (`u_pt_dir`):**
+   In `geometry._build_prefix_tree` and `kernel._path_sums_tree_ptt`, every node $u$ in the
+   multi-hop intra-voxel prefix tree is weighted by both hop curvature and discrete torsion /
+   curvature-change $\Delta\boldsymbol{\kappa} = (\mathbf{u}_d - \mathbf{u}_{d_{\text{prev}}}) - (\mathbf{u}_{d_{\text{prev}}} - \mathbf{u}_{d_{\text{gprev}}})$:
+   $$\text{u\_curv\_w}[u] = \exp\!\left(-\frac{\theta(\mathbf{u}_{d_{\text{prev}}}, \mathbf{u}_d)^2}{2\sigma_\kappa^2}\right) \cdot \exp\!\left(-\frac{\|\Delta\boldsymbol{\kappa}\|^2}{2\sigma_\kappa^2}\right),$$
+   which penalizes S-shaped wiggles inside a voxel while preserving smooth C-shaped curves.
+   Furthermore, when a curved path starts along $\mathbf{u}_{d_1}$ and exits voxel $v$ along
+   $\mathbf{u}_d$, parallel-transporting the frame along the constant-curvature arc in the
+   osculating plane predicts a next-voxel tangent rotated by the reflection of $\mathbf{u}_{d_1}$
+   across $\mathbf{u}_d$:
+   $$\mathbf{v}_{\text{refl}} = 2(\mathbf{u}_{d_1}\cdot \mathbf{u}_d)\,\mathbf{u}_d - \mathbf{u}_{d_1}, \qquad \mathbf{v}_{\text{extrap}} = \frac{1}{2}\mathbf{u}_d + \frac{1}{2}\mathbf{v}_{\text{refl}}, \qquad \text{u\_pt\_dir}[u] = \arg\max_{d'}(\mathbf{u}_{d'} \cdot \mathbf{v}_{\text{extrap}}).$$
+   Evaluating the neighbor voxel's cone mass $Y_{v'}(\text{u\_pt\_dir}[u])$ along the
+   parallel-transported tangent rewards co-circular arcs (`ARC_L`, `CGC_R`) and suppresses
+   accidental turns onto straight crossing fibers.
+4. **Sub-stochastic probe rejection (`stop_mass`):**
+   In `kernel._apply_incoming_ptt`, incoming direction $e$ continues with probability
+   $Z_v(e) / (Z_v(e) + \tau)$ and terminates in place (`dead` mass) with probability
+   $\tau / (Z_v(e) + \tau)$ ($\tau = 10^{-4}$).  Walkers whose forward cylindrical probe loses
+   support stop cleanly rather than being renormalized into perpendicular crossing tracts or
+   trapped in recirculating loops.
+
+```python
+from mcat import Chain, ChainConfig
+
+cfg = ChainConfig.ptt()  # fod_thresh=0.08, fod_power=1.5, curv_sigma=18°, probe_radius=0.35, stop_mass=1e-4
+chain = Chain.build(sf_sh, sphere_vertices, wm_mask, gm_mask, cfg=cfg)
+```
+
+#### Plain-English Intuition: Speed, Coherence, and Mass Concentration
+
+1. **Why is `MCAT-PTT` $1.5\times$–$4.4\times$ faster than baseline MCAT?**
+   Each solver iteration multiplies a vector by the sparse matrix $Q$, and the number of
+   iterations depends on how many steps walkers bounce around before hitting gray matter or an
+   ROI:
+   - **30.6% fewer nonzeros per matrix-vector multiply:** Raising the fODF floor (`0.05` $\to$
+     `0.08`), sharpening peaks ($p = 1.5$), and attenuating wide turns eliminate tiny side-lobe
+     transitions (`210.0M` $\to$ `145.7M` nonzeros, `-30.6%`).  Every solver step does 30.6%
+     less arithmetic and memory traffic.
+   - **No recirculating "eddies" or loops (`745` $\to$ `175` forward steps):** In baseline
+     `iFOD2`, walkers can take consecutive $35^\circ$ turns in the same direction and loop in
+     circles inside crossings or deep white matter (`8` states exceed $250\text{ mm}$, and the
+     whole-brain forward solve takes `745` iterations / `CGC_R` takes `825` iterations for
+     recirculating walkers to drain).  With PTT's curvature penalty and `stop_mass`, walkers
+     move ballistically along coherent tracts and stop cleanly at dead ends (`0` trapped
+     overlength states, and forward convergence drops from `745` $\to$ `175` iterations on
+     `_whole` and `825` $\to$ `160` iterations on `CGC_R`).
+2. **How to interpret the Laminar Coherence results (Panel B):**
+   - At each voxel, a bundle's walkers can step into up to 26 neighbor directions.  **Directional
+     flux coherence** measures whether all walkers in that voxel march in lockstep in a single
+     direction ($\text{Coherence} \to 1.0$, like cars on a highway) or fan out into many
+     directions at once ($\text{Coherence} \to 0.0$, like people scattering in a plaza).
+   - **Effective branching degree $K_{\text{eff}} \in [1, 26]$** is the intuitive counterpart:
+     it tells you *how many neighbor voxels* a typical walker splits its probability across at
+     each step.
+   - Under `MCAT-PTT`, trunk coherence rises across every tract (`CST_L`: `0.605` $\to$ `0.655`;
+     `ARC_L`: `0.631` $\to$ `0.690`; `CGC_R`: `0.773` $\to$ `0.816`) and $K_{\text{eff}}$ drops
+     by ~`1.4` neighbors (`ARC_L`: `8.01` $\to$ `6.58`; `CST_L`: `7.64` $\to$ `6.21`; `CGC_R`:
+     `5.32` $\to$ `4.41`), while still capturing the real anatomical fanning at the cortical
+     terminations ($q \to 0$ and $q \to 1$).
+3. **How to interpret the Bundle Mass Concentration curves (Panel C):**
+   - A common failure mode of probabilistic tractography (`iFOD2`) is a **fuzzy "cloud" or halo**
+     around the tract: walkers leak a few steps into crossing tracts, wander around, and still
+     manage to reach the target ROI, smearing the bundle over a huge volume of white matter while
+     simultaneously causing other walkers to get lost completely (lowering streamline yield).
+   - Panel C sorts voxels from highest to lowest bundle density and asks: *"How much white-matter
+     volume ($\text{cm}^3$) is needed to hold 90% of the bundle ($V_{90}$)?"*
+   - Under `MCAT-PTT`, the solid curves rise much more steeply than the dashed baseline curves:
+     **90% of the bundle is packed into 22%–26% less white-matter volume** (`ARC_L`: `39.5 cm³`
+     $\to$ `29.2 cm³`; `CST_L`: `33.7 cm³` $\to$ `25.2 cm³`; `CGC_R`: `19.8 cm³` $\to$
+     `15.5 cm³`), *and at the same time* **62%–82% more walkers successfully reach the target
+     ROI** (`ARC_L`: `259` $\to$ `470` streamlines; `CST_L`: `98` $\to$ `159`; `CGC_R`: `132`
+     $\to$ `222`).  Instead of leaking into a diffuse off-tract cloud or getting lost in
+     crossings, walkers stay focused inside the true anatomical sheet from start to finish.
+
+![MCAT-PTT vs Baseline MCAT Comparison](benchmarks/fig6_ptt_comparison.png)
+
+
