@@ -204,7 +204,7 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
             if len(first) == 1 and all(" " in b for b in bases):   # "Callosum A + Callosum B" -> "Callosum A + B"
                 bases = [bases[0]] + [b.split(" ", 1)[1] for b in bases[1:]]
             sides = {split_side(m)[1] for m in mem} - {None}
-            suffix = " (L + R)" if sides == {"L", "R"} else f" ({sides.pop()})" if sides else ""
+            suffix = f" ({sides.pop()})" if len(sides) == 1 else ""      # a side only when one
             panels.append(dict(view=view, members=mem, title=" + ".join(bases) + suffix))
             used.update(mem)
     for n in dens:
@@ -221,7 +221,7 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
             v = views.get(n) or view_of(n, dens[n], aff)
         used.update(members)
         if len(members) == 2:
-            title = title_of(base) + " (L + R)"
+            title = title_of(base)                       # both sides: no side
         elif side and re.sub(r"[^a-z]", "", base.lower()) in titles:
             title = {"L": "Left ", "R": "Right "}[side] + title_of(base)
         else:
@@ -330,15 +330,14 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
             ax.set_axis_off()
             # the title on the image, wrapped to the panel: white with a black outline
             per_line = max(8, int(w * 72 / (fs * 0.58)) - 1)
-            text = textwrap.fill(f"{p['title']} \u00b7 {v}", per_line)
+            text = textwrap.fill(p["title"], per_line)
             ax.text(0.03, 0.97, text, transform=ax.transAxes, color="white", fontsize=fs, ha="left", va="top",
                     linespacing=1.15, path_effects=[pe.withStroke(linewidth=2.2, foreground="black")], zorder=5)
         y_top -= rh
     cax = fig.add_axes([0.04, (bottom - 0.2) / H, 0.3, 0.12 / H])
     cb = fig.colorbar(im, cax=cax, orientation="horizontal")
     cb.ax.tick_params(colors="white", labelsize=0.85 * fs)
-    bg = "a T1 slice through the bundle" if is_t1 else "the brain's silhouette"
-    label = f"density / own peak (log): maximum-intensity projection over {bg}"
+    label = "density / own peak (log): maximum-intensity projection"
     room = W * (1 - 0.04 - 0.3) - 0.1 * W * 0.3 - 0.1          # inches right of the bar
     label = textwrap.fill(label, max(10, int(room * 72 / (fs * 0.55))))
     cax.text(1.08, 0.5, label, transform=cax.transAxes, color="white", fontsize=fs, ha="left", va="center",
