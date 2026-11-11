@@ -60,6 +60,11 @@ mcat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
 | file | |
 |---|---|
 | `<sub>_bundle-<Name>_desc-density_map.nii.gz` | expected steps of bundle streamlines in each voxel, summed over all seeds |
+| `..._desc-afd_map.nii.gz` | analytical SIFT2 density: the bundle's share of each fixel's Apparent Fibre Density (AFD, in steradians), summed over the voxel's fixels (`mcat.quantify`) |
+| `..._desc-tdimm_map.nii.gz` | chord-weighted track-density image (expected physical streamline length in mm traversed per voxel) |
+| `..._desc-qharmonic_map.nii.gz` | Laplace–Beltrami harmonic committor coordinate $q \in [0, 1]$ from start ($0$) to end ($1$) on the bundle's reactive flux graph |
+| `..._desc-coherence_map.nii.gz` | directional coherence $\in [0, 1]$ of the bundle's 26-neighbour reactive edge flux in each voxel |
+| `..._desc-keff_map.nii.gz` | effective branching number $K_{\text{eff}} = \exp(H) \in [1, 26]$ of the bundle's outgoing reactive flux |
 | `..._desc-endpoints_map.nii.gz` | expected bundle endpoints per grey-matter or edge voxel (two per streamline) |
 | `..._desc-visitodf_dwimap.nii.gz` | visitation ODF: the directions the bundle's streamlines travel in each voxel, as SH in the fODF's basis (DIPY descoteaux07, lmax 8), in expected visits per steradian; it integrates to the density. Written where the density is at least 1e-3 of its peak |
 | `..._desc-seedprob_probmap.nii.gz` | probability that the streamline seeded in each interface voxel belongs to the bundle |
@@ -67,8 +72,8 @@ mcat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
 | `..._desc-core_path.tsv`, `_desc-core.tck` | the bundle's core: the cross-section ridge path, 100 nodes |
 | `..._desc-throughflux_map.nii.gz`, `_desc-edgeflux_map.nii.gz` | with `flux`: expected bundle-streamline steps leaving each voxel, and the same per neighbour (26 volumes) |
 | `<sub>_desc-mcat_fixels/` | with `fixels`: MRtrix fixel directory (`index`, `directions`, `<bundle>_streamlines`, `all_streamlines`, `<bundle>_share`, `<bundle>_share_of_bundles`) |
-| `..._desc-summary.json` | settings, solve diagnostics, mass check |
-| `<sub>_desc-mcat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
+| `..._desc-summary.json` | settings, solve diagnostics, mass check, and per-bundle quantifications |
+| `<sub>_desc-mcat_table.tsv` | per bundle: expected streamlines, mean length (mm), AFD tract volume ($\text{mm}^3$), AFD cross-sectional area ($\text{mm}^2$), median cut-flux, columns, steps, Krylov products, time |
 | `<sub>_desc-mcat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
 | `<sub>_desc-mcat_collage.png` | every bundle's density as sagittal, coronal and axial maximum-intensity projections, log scale (`viz`) |
 | `<sub>_desc-mcat_view.html` | viewer page with every bundle: densities and cores (`viz`) |
@@ -91,16 +96,30 @@ With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs
 - **Geometry (MITTENS v2).**
   - A hop is one voxel long (of the smallest voxel side) and turns less than `angle`.
   - MITTENS enumerates every hop sequence inside a voxel, with the exact volume of start points, on DSI Studio's 642-direction sphere. Anisotropic voxels are exact.
-  - MCAT adds each path's last direction class (the walker's memory) and its box of start points (for moments).
+  - MCAT adds each path's last direction class (the walker's memory), its box of start points (for moments), and a preorder prefix tree (`geometry._build_prefix_tree`) that skips zero-fODF subtrees in $O(1)$ time during matrix assembly.
 - **Transitions.**
   - A state is (voxel, one of 26 direction classes). Its transitions are sums over MITTENS paths of the fODF's turning probabilities times the doubleODF look-ahead, conditioned on the incoming direction.
   - Each transition is stored as a 1-byte slot into its class's template of (neighbour, class) pairs, plus a float64 weight. One copy serves forward (scatter) and backward (gather) steps.
 - **Bundles.**
   - One backward solve per (avoid set × end kind) gives every state's probability of completing the bundle's requirements, shared by all seeds.
   - One forward solve from every seed's launch, weighted by its partner half's completion, gives the occupancy. Occupancy × completion is the bundle density.
-- **Spatial moments.** States also carry their mean sub-voxel position, with a linear (Prather) closure that is exact per MITTENS path. Without them, every voxel restarts its paths from a uniform position, which makes bundles several times too wide. The closure can amplify around a few loops; those voxels fall back to the uniform closure.
+- **Spatial moments.** States also carry their mean sub-voxel position, with a linear (Prather) closure that is exact per MITTENS path (`ChainConfig(moments=True)`, with optional slope-limited `"positivity"` or $3 \times 3$ `"transverse"` closures). Without them, every voxel restarts its paths from a uniform position, which makes bundles several times too wide.
 - **Visitation ODFs.** The bundle density is kept per direction class (state), then spread over the sphere within each class as the chain itself assumes (q ∝ X·Y, the fODF times its cone sum). It is symmetrised and fitted with SH.
-- **Fixels.** The walkers' headings are known per voxel, so a bundle's density splits exactly among the fODF's lobes: `mcat.fixels` segments the fixels and gives each bundle's expected streamlines through every fixel, and its share of all traffic, as an MRtrix fixel directory for fixel-based analysis without tractography ([docs/fields.md](docs/fields.md) section 9).
+- **Fixels.** The walkers' headings are known per voxel, so a bundle's density splits exactly among the fODF's lobes: `mcat.fixels` segments the fixels in parallel L1-cache Numba and pre-aggregates class-to-fixel weights (`_w_fix`), giving each bundle's expected streamlines through every fixel in ~40 ms (`mcat.DirectedFixelChain` also builds a chain directly on the segmented lobes). See [docs/fields.md](docs/fields.md) section 9.
 - **Bundle fields.** The occupancy and completion solutions behind the maps can be kept (`segment_bundles(keep_fields=True)`, `mcat.fields`): they give the bundle's edge flux (expected streamline steps along every transition, conserved, counting the streamlines across any cut), committors (where the walks through a voxel end) and an exact endpoint filter. [docs/fields.md](docs/fields.md) explains them and reports a test-retest evaluation.
-- **Cores.** A first most-probable path finds the corridor. Each voxel joins the cross-section of its nearest path voxel. A second shortest path, with cost −log(density / its cross-section's maximum), follows the ridge without a length penalty.
+
+## Extensions: doing streamline-era analyses without streamlines
+
+Dropping individual streamlines does not mean losing quantitative tractometry, SIFT/SIFT2 filtering, or structural connectomes. Because the chain's transition-path fields give the exact directional density, 26-neighbour reactive edge flux, and fixel traffic at every white-matter voxel, standard streamline-era analyses have closed-form Markov counterparts ([docs/fields.md](docs/fields.md) section 10; full benchmarks and visual atlases in [docs/benchmarks/exploration_results.md](docs/benchmarks/exploration_results.md)):
+
+- **Cores and harmonic along-tract coordinates (`mcat.core`, `mcat.quantify`).**
+  - *1-D cross-section ridge core (`bundle_core`):* A first Dijkstra shortest path (`cost = -log(density / peak)`) finds the bundle corridor between the endpoint anchors (`split_ends`). Multi-source Dijkstra from that path partitions the bundle into orthogonal cross-sections, and a second Dijkstra pass with cost $-\log(\text{density} / \max_{\text{cs}} \text{density})$ follows the cross-sectional peak with **zero length penalty**, so the core never cuts corners around bends (`_desc-core.tck`, `_desc-core_path.tsv`).
+  - *3-D harmonic committor field (`harmonic_tractometry`):* Solving the Laplace–Beltrami Dirichlet equation $(L_W + \operatorname{diag}(g_S + g_E))\,q = g_E$ on the bundle's symmetrized reactive flux graph gives an intrinsic coordinate $q_{\text{harmonic}} \in [0, 1]$ (`_desc-qharmonic_map.nii.gz`) whose level sets are everywhere orthogonal to the flow and carry a conserved net reactive current $\mathcal{I}_{\text{cut}}(q)$ equal to the bundle's expected streamline count.
+- **Branching, fanning, and fiber coherence (`mcat.quantify.routing_entropy_and_coherence`).**
+  - The bundle's 26-neighbour outgoing reactive flux $F_b(v, n)$ isolates *this* bundle's transitions even inside crossing-fiber voxels. Its normalized routing distribution $p_b(n \mid v)$ yields the **effective branching number** $K_{\text{eff}}(v) = \exp(H_b(v)) \in [1, 26]$ (`_desc-keff_map.nii.gz`) and **directional flux coherence** $\text{coh}_b(v) \in [0, 1]$ (`_desc-coherence_map.nii.gz`), separating tight deep-white-matter trunks ($K_{\text{eff}} \approx 5\text{–}7$, $\text{coh} \approx 0.7\text{–}0.8$) from cortical fans ($K_{\text{eff}} \approx 8.5\text{–}10$, $\text{coh} \approx 0.5$).
+- **Analytical SIFT and SIFT2 on bundles (`mcat.quantify.afd_tract_metrics`).**
+  - Raw visitation density (`density_t`) scales with seed count and is inflated by path length $L$. Dividing a bundle's fixel traffic $n_b(f)$ by the unconditioned whole-brain fixel traffic $n_{\text{all}}(f)$ and multiplying by the lobe's Apparent Fibre Density $\text{AFD}(f)$ gives the bundle's seed-invariant intra-axonal density (`_desc-afd_map.nii.gz`) and **AFD-calibrated tract volume** $\mathcal{V}_{\text{AFD}}$ ($\text{mm}^3$) without iterative SIFT optimization. Dividing $\mathcal{V}_{\text{AFD}}$ by the exact Markov mean streamline length $\bar{L}_b$ (from the chord-weighted TDI map `_desc-tdimm_map.nii.gz`) removes length bias to give the **effective axonal cross-sectional area** $\mathcal{A}_{\text{AFD}} = \mathcal{V}_{\text{AFD}} / \bar{L}_b$ ($\text{mm}^2$).
+- **Whole-brain SIFT2 structural connectivity matrices (`mcat.connectome.build_connectome`).**
+  - Given any cortical/subcortical parcellation with $R$ parcels in dMRI space, `build_connectome` solves two batched $R$-column backward systems — hitting probabilities $(I - Q) B = R_{\text{abs}} E_{\text{GM}}$ and expected path lengths $(I - Q) M_{\text{len}} = d_{\text{chord}} \odot B$ — and projects them onto the forward and antipodal backward weights of every white-matter fixel. That partitions the brain's total intra-axonal AFD volume across all $\binom{R}{2}$ parcel pairs in closed form (`~135 s` for 100 Schaefer parcels), yielding seed-free $R \times R$ matrices of SIFT2 volume $V_{\text{AFD}}(i, j)$ ($\text{mm}^3$), mean streamline length $\bar{L}_{ij}$ ($\text{mm}$), and length-debiased cross-sectional area $\mathcal{A}_{\text{AFD}}(i, j) = V_{\text{AFD}}(i, j) / \bar{L}_{ij}$ ($\text{mm}^2$).
+
 

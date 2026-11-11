@@ -139,10 +139,67 @@ def _incoming_m(q_e, q_w, X, Y, Zv, zK, cK, cone_ptr, cone_idx, d1_ptr, t_nbr, t
     return dead
 
 
+@njit(cache=True)
+def _prep_m_tree(vlin, Xall, Yall, xrow, label, noff, double_odf, u_dir, u_parent, u_d1, u_skip,
+                 u_eptr, e_vol, e_nbr, e_trip, chan_e, cone_ptr, cone_idx, nT):
+    """Prefix-tree channel version of kernel._voxel_prep: cK[t, k], zK[d1, k] (channel 0 = plain sums)."""
+    X = Xall[xrow[vlin]].astype(np.float64)
+    Y = Yall[xrow[vlin]].astype(np.float64)
+    V = X.shape[0]
+    wrows = np.empty(26, np.int64)
+    K._lookahead_rows(vlin, label, xrow, noff, double_odf, wrows)
+    nk = chan_e.shape[1]
+    cK = np.zeros((nT, nk))
+    zK = np.zeros((V, nk))
+    n_nodes = u_dir.shape[0]
+    pi = np.empty(n_nodes)
+    u = 0
+    while u < n_nodes:
+        d = u_dir[u]
+        par = u_parent[u]
+        if par < 0:
+            if X[d] <= 0.0:
+                u = u_skip[u]
+                continue
+            val_u = 1.0
+        else:
+            if X[d] <= 0.0:
+                u = u_skip[u]
+                continue
+            val_u = pi[par] * (X[d] / Y[u_dir[par]])
+            if val_u == 0.0:
+                u = u_skip[u]
+                continue
+        pi[u] = val_u
+        d1 = u_d1[u]
+        e0 = u_eptr[u]
+        e1 = u_eptr[u + 1]
+        for e in range(e0, e1):
+            r = wrows[e_nbr[e]]
+            if r == -2:
+                continue
+            val = e_vol[e] * val_u
+            if r >= 0:
+                val *= Yall[r, d]
+            tp = e_trip[e]
+            for j in range(nk):
+                w = val * chan_e[e, j]
+                cK[tp, j] += w
+                zK[d1, j] += w
+        if Y[d] <= 0.0:
+            u = u_skip[u]
+        else:
+            u += 1
+    Zv = np.empty(V)
+    K._incoming_norm(X, Y, np.ascontiguousarray(zK[:, 0]), cone_ptr, cone_idx, Zv)
+    return X, Y, cK, zK, Zv
+
+
 @njit(parallel=True, cache=True)
-def chunk_blocks_m(vlist, Xall, Yall, xrow, label, noff, double_odf, p_vol, p_dirs, p_len, p_nbr,
-                   p_trip, chan, d1_ptr, t_nbr, t_bin, cone_ptr, cone_idx, bin_ptr, bin_idx, out, dead):
-    """out[i, b, n, b', 4, 4]: block transitions of every class of voxel vlist[i]; dead[i, b, 4]."""
+def chunk_blocks_m_tree(vlist, Xall, Yall, xrow, label, noff, double_odf, u_dir, u_parent, u_d1,
+                        u_skip, u_eptr, e_vol, e_nbr, e_trip, chan_e, d1_ptr, t_nbr, t_bin,
+                        cone_ptr, cone_idx, bin_ptr, bin_idx, out, dead):
+    """Prefix-tree accelerated chunk_blocks_m."""
     nb = out.shape[1]
     V = Xall.shape[1]
     for i in prange(vlist.shape[0]):
@@ -152,8 +209,10 @@ def chunk_blocks_m(vlist, Xall, Yall, xrow, label, noff, double_odf, p_vol, p_di
         if xrow[v] < 0:
             dd[:, 0] = 1.0
         else:
-            X, Y, cK, zK, Zv = _prep_m(v, Xall, Yall, xrow, label, noff, double_odf, p_vol, p_dirs,
-                                       p_len, p_nbr, p_trip, chan, cone_ptr, cone_idx, t_nbr.shape[0])
+            X, Y, cK, zK, Zv = _prep_m_tree(
+                v, Xall, Yall, xrow, label, noff, double_odf, u_dir, u_parent, u_d1, u_skip,
+                u_eptr, e_vol, e_nbr, e_trip, chan_e, cone_ptr, cone_idx, t_nbr.shape[0]
+            )
             acc = np.zeros(V)
             accz = np.zeros((V, 3))
             mark = np.zeros(V, np.bool_)
@@ -167,10 +226,10 @@ def chunk_blocks_m(vlist, Xall, Yall, xrow, label, noff, double_odf, p_vol, p_di
 
 
 @njit(parallel=True, cache=True)
-def launch_batch_m(seed_vlin, dptr, dirs, Xall, Yall, xrow, label, noff, double_odf, p_vol, p_dirs,
-                   p_len, p_nbr, p_trip, chan, d1_ptr, t_nbr, t_bin, cone_ptr, cone_idx, nb, out, dead):
-    """out[h] (26, nb, 4): (mass, Q) after the first exit of half h, launched from a uniform
-    position (Q = 0) along dirs[h]."""
+def launch_batch_m_tree(seed_vlin, dptr, dirs, Xall, Yall, xrow, label, noff, double_odf, u_dir,
+                        u_parent, u_d1, u_skip, u_eptr, e_vol, e_nbr, e_trip, chan_e, d1_ptr,
+                        t_nbr, t_bin, cone_ptr, cone_idx, nb, out, dead):
+    """Prefix-tree accelerated launch_batch_m."""
     V = Xall.shape[1]
     for i in prange(seed_vlin.shape[0]):
         v = seed_vlin[i]
@@ -179,8 +238,10 @@ def launch_batch_m(seed_vlin, dptr, dirs, Xall, Yall, xrow, label, noff, double_
                 out[h] = 0.0
                 dead[h] = 1.0
             continue
-        X, Y, cK, zK, Zv = _prep_m(v, Xall, Yall, xrow, label, noff, double_odf, p_vol, p_dirs,
-                                   p_len, p_nbr, p_trip, chan, cone_ptr, cone_idx, t_nbr.shape[0])
+        X, Y, cK, zK, Zv = _prep_m_tree(
+            v, Xall, Yall, xrow, label, noff, double_odf, u_dir, u_parent, u_d1, u_skip,
+            u_eptr, e_vol, e_nbr, e_trip, chan_e, cone_ptr, cone_idx, t_nbr.shape[0]
+        )
         acc = np.zeros(V)
         accz = np.zeros((V, 3))
         mark = np.zeros(V, np.bool_)
@@ -189,7 +250,7 @@ def launch_batch_m(seed_vlin, dptr, dirs, Xall, Yall, xrow, label, noff, double_
             o = np.zeros((26, nb, 4, 4))
             dead[h] = _incoming_m(np.full(1, dirs[h], np.int64), np.ones(1), X, Y, Zv, zK, cK,
                                   cone_ptr, cone_idx, d1_ptr, t_nbr, t_bin, acc, accz, mark, touched, o)
-            out[h] = o[:, :, :, 0]   # input (M = 1, Q = 0): the first column
+            out[h] = o[:, :, :, 0]
 
 
 @njit(cache=True)
@@ -409,9 +470,45 @@ class MomentChain(Chain):
         return (X, Y, xrow, label, noff, dbl, p_vol, p_dirs, p_len, p_nbr, p_trip, self._chan,
                 d1_ptr, t_nbr, t_bin, cptr, cidx)
 
+    def _margs_tree(self):
+        g = self.geo
+        if getattr(self, "_chan_e", None) is None:
+            if getattr(self, "_chan", None) is None:
+                self._chan = spatial_channels(g)
+            self._chan_e = np.ascontiguousarray(self._chan[g.e_orig])
+        return (self.X, self.Y, self.xrow, self.label, self.noff, self.cfg.double_odf, g.u_dir,
+                g.u_parent, g.u_d1, g.u_skip, g.u_eptr, g.e_vol, g.e_nbr, g.e_trip, self._chan_e,
+                g.d1_ptr, g.t_nbr, g.t_bin, g.cone_ptr, g.cone_idx)
+
+    def _apply_moment_closure(self):
+        closure = getattr(self.cfg, "moment_closure", "standard")
+        if closure == "standard" or self.Q_blk.size == 0:
+            return
+        alpha = 1.0 / np.sqrt(3.0)
+        blk = self.Q_blk.reshape(-1, 4, 4)
+        blk[:, :, 1:] *= alpha
+        self.R_blk[:, 1:] *= alpha
+        self.dead4[:, 1:] *= alpha
+        if closure == "transverse":
+            u_cls = OFFSETS / np.linalg.norm(OFFSETS, axis=1, keepdims=True)
+            P_proj = np.zeros((26, 3, 3), np.float32)
+            for b in range(26):
+                u = u_cls[b]
+                P_proj[b] = np.eye(3) - np.outer(u, u)
+            rows_s = np.repeat(np.arange(self.t_lin.size * self.nb), np.diff(self.Q_ptr))
+            Ps = P_proj[rows_s % 26]
+            Pd = P_proj[self.Q_ind % 26]
+            blk[:, 0, 1:] = np.einsum("ki,kij->kj", blk[:, 0, 1:], Ps)
+            blk[:, 1:, 0] = np.einsum("kij,kj->ki", Pd, blk[:, 1:, 0])
+            blk[:, 1:, 1:] = np.einsum("kab,kbc,kcd->kad", Pd, blk[:, 1:, 1:], Ps)
+            r_rows = np.repeat(np.arange(self.t_lin.size * self.nb), np.diff(self.R_ptr))
+            if r_rows.size:
+                self.R_blk[:, 1:] = np.einsum("ki,kij->kj", self.R_blk[:, 1:], P_proj[r_rows % 26])
+        self.Q_blk = blk.reshape(-1, 16)
+
     def _build_matrices(self):
         nb, Nt = self.nb, self.t_lin.size
-        args = self._margs()
+        args = self._margs_tree()
         chunk = max(16, self.cfg.chunk // 4)
         Ns = Nt * nb
         q_ind, q_blk = _Grower(np.int32), _Grower(np.float32, 16)
@@ -424,7 +521,7 @@ class MomentChain(Chain):
             vl = self.t_lin[s:s + chunk]
             out = np.empty((vl.size, nb, 26, nb, 4, 4), np.float32)
             dead = np.empty((vl.size, nb, 4))
-            chunk_blocks_m(vl, *args, self.geo.bin_ptr, self.geo.bin_idx, out, dead)
+            chunk_blocks_m_tree(vl, *args, self.geo.bin_ptr, self.geo.bin_idx, out, dead)
             qp, qi, qb, rp, ri, rb, dd = blocks_to_rows(vl, out, dead, self.label, self.noff,
                                                        self.tindex, self.aindex)
             del out
@@ -441,6 +538,7 @@ class MomentChain(Chain):
         self.Q_ptr, self.R_ptr = Q_ptr, R_ptr
         self.Q_ind, self.Q_blk = q_ind.array(), q_blk.array()
         self.R_ind, self.R_blk = r_ind.array(), r_blk.array()
+        self._apply_moment_closure()
 
     def _finalize(self):
         self.n_states = self.t_lin.size * self.nb
@@ -451,7 +549,7 @@ class MomentChain(Chain):
         stabilize(self)
 
     def launch_halves(self, seed_vlin, dptr, dirs, out, dead):
-        launch_batch_m(seed_vlin, dptr, dirs, *self._margs(), self.nb, out, dead)
+        launch_batch_m_tree(seed_vlin, dptr, dirs, *self._margs_tree(), self.nb, out, dead)
 
     def mul_forward(self, x, out):
         Ns = self.n_states

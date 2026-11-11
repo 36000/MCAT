@@ -40,6 +40,16 @@ class Geometry:
     t_nbr: np.ndarray
     t_bin: np.ndarray
     nb: int = 26
+    # Preorder prefix tree over hop sequences (for O(1) zero-ODF subtree skipping)
+    u_dir: np.ndarray = None
+    u_parent: np.ndarray = None
+    u_d1: np.ndarray = None
+    u_skip: np.ndarray = None
+    u_eptr: np.ndarray = None
+    e_vol: np.ndarray = None
+    e_nbr: np.ndarray = None
+    e_trip: np.ndarray = None
+    e_orig: np.ndarray = None
 
     @property
     def n_dirs(self):
@@ -47,6 +57,96 @@ class Geometry:
 
     def antipode(self):
         return np.argmin(self.vertices @ self.vertices.T, axis=1)
+
+
+def _build_prefix_tree(p_dirs, p_len, p_vol, p_nbr, p_trip):
+    """Compile flat path emissions into a preorder prefix tree over hop sequences."""
+    P = p_dirs.shape[0]
+    children = [{}]
+    node_dir = [-1]
+    node_parent = [-1]
+    node_d1 = [-1]
+    node_emiss = [[]]
+
+    for p in range(P):
+        L = int(p_len[p])
+        cur = 0
+        d1 = int(p_dirs[p, 0])
+        for i in range(L):
+            d = int(p_dirs[p, i])
+            ch = children[cur].get(d)
+            if ch is None:
+                ch = len(children)
+                children[cur][d] = ch
+                children.append({})
+                node_dir.append(d)
+                node_parent.append(cur)
+                node_d1.append(d1)
+                node_emiss.append([])
+            cur = ch
+        node_emiss[cur].append(p)
+
+    n_nodes = len(children) - 1
+    u_dir = np.empty(n_nodes, np.int64)
+    u_parent = np.empty(n_nodes, np.int64)
+    u_d1 = np.empty(n_nodes, np.int64)
+    u_skip = np.empty(n_nodes, np.int64)
+    u_eptr = np.zeros(n_nodes + 1, np.int64)
+    e_orig = np.empty(P, np.int64)
+
+    old_to_pre = np.full(len(children), -1, np.int64)
+    stack = [(children[0][d], False) for d in sorted(children[0].keys(), reverse=True)]
+    pre_idx = 0
+    emiss_idx = 0
+    while stack:
+        nid, exiting = stack.pop()
+        if exiting:
+            u_skip[old_to_pre[nid]] = pre_idx
+            continue
+        u = pre_idx
+        pre_idx += 1
+        old_to_pre[nid] = u
+        u_dir[u] = node_dir[nid]
+        par = node_parent[nid]
+        u_parent[u] = -1 if par == 0 else old_to_pre[par]
+        u_d1[u] = node_d1[nid]
+        for p in node_emiss[nid]:
+            e_orig[emiss_idx] = p
+            emiss_idx += 1
+        u_eptr[u + 1] = emiss_idx
+        stack.append((nid, True))
+        for d in sorted(children[nid].keys(), reverse=True):
+            stack.append((children[nid][d], False))
+
+    return (u_dir, u_parent, u_d1, u_skip, u_eptr,
+            np.ascontiguousarray(p_vol[e_orig]),
+            np.ascontiguousarray(p_nbr[e_orig]),
+            np.ascontiguousarray(p_trip[e_orig]),
+            e_orig)
+
+
+def class_chord_lengths(geo: Geometry, zooms=None):
+    """Expected inter-voxel step length (in voxel units if ``zooms is None``, else in mm)
+    for each of the 26 direction classes, weighted by path volume over each class's cone."""
+    nbr_disp = OFFSETS.astype(np.float64)
+    if zooms is not None:
+        nbr_disp = nbr_disp * np.abs(np.asarray(zooms, float))[None, :]
+    nbr_len = np.linalg.norm(nbr_disp, axis=1)
+    p_len = nbr_len[geo.p_nbr]
+    V = geo.n_dirs
+    d1 = geo.p_dirs[:, 0]
+    vol_d1 = np.bincount(d1, weights=geo.p_vol, minlength=V)
+    len_d1 = np.bincount(d1, weights=geo.p_vol * p_len, minlength=V)
+    out = np.zeros(geo.nb)
+    for b in range(geo.nb):
+        es = geo.bin_idx[geo.bin_ptr[b]:geo.bin_ptr[b + 1]]
+        w_tot = l_tot = 0.0
+        for e in es:
+            ds = geo.cone_idx[geo.cone_ptr[e]:geo.cone_ptr[e + 1]]
+            w_tot += vol_d1[ds].sum()
+            l_tot += len_d1[ds].sum()
+        out[b] = l_tot / max(w_tot, 1e-30)
+    return out
 
 
 def build_geometry(zooms, angle_max=35.0, step_vox=1.0) -> Geometry:
@@ -80,10 +180,12 @@ def build_geometry(zooms, angle_max=35.0, step_vox=1.0) -> Geometry:
     key = dirs[:, 0] * (26 * 26) + nbr * 26 + vbin[last]
     ukey, trip = np.unique(key, return_inverse=True)
     d1 = ukey // (26 * 26)
+    trip = trip.astype(np.int64)
+    tree = _build_prefix_tree(dirs, length, vol, nbr, trip)
     return Geometry(V, np.asarray(ip, np.int64), np.asarray(ix, np.int64), vol, dirs, length, nbr,
-                    total, lo, hi, vbin, bin_ptr, bin_idx, trip.astype(np.int64),
+                    total, lo, hi, vbin, bin_ptr, bin_idx, trip,
                     np.searchsorted(d1, np.arange(len(V) + 1)).astype(np.int64),
-                    ((ukey // 26) % 26).astype(np.int64), (ukey % 26).astype(np.int64))
+                    ((ukey // 26) % 26).astype(np.int64), (ukey % 26).astype(np.int64), 26, *tree)
 
 
 def _sh_basis(vertices, n_coef):

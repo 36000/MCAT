@@ -31,15 +31,21 @@ VALID_ENDS = (1, 3)                                 # grey matter and brain edge
 
 @dataclass
 class ChainConfig:
-    angle: float = 35.0        # maximum turn per hop, degrees
-    step: float = 1.0          # hop length, voxels (of the smallest voxel side)
-    double_odf: bool = True    # weight each hop by the fODF where it lands (iFOD2-like)
-    moments: bool = False      # spatial first moments (sub-voxel position, see moments.py)
-    chunk: int = 256           # voxels per build chunk
+    angle: float = 35.0               # maximum turn per hop, degrees
+    step: float = 1.0                 # hop length, voxels (of the smallest voxel side)
+    double_odf: bool = True           # weight each hop by the fODF where it lands (iFOD2-like)
+    moments: bool = False             # spatial first moments (sub-voxel position, see moments.py)
+    moment_closure: str = "standard"  # "standard", "positivity" (alpha=1/sqrt(3)), or "transverse" (2D plane)
+    stop_mass: float = 0.0            # MITTENS stopping regularizer tau in Z_v(e) + tau
+    chunk: int = 256                  # voxels per build chunk
 
     def key(self):
         d = asdict(self)
         d.pop("chunk")
+        if d.get("stop_mass", 0.0) == 0.0:
+            d.pop("stop_mass", None)
+        if d.get("moment_closure", "standard") == "standard":
+            d.pop("moment_closure", None)
         return d
 
 
@@ -156,14 +162,20 @@ class Chain:
         return (self.X, self.Y, self.xrow, self.label, self.noff, self.cfg.double_odf, g.p_vol,
                 g.p_dirs, g.p_len, g.p_nbr, g.p_trip, g.d1_ptr, g.t_nbr, g.t_bin, g.cone_ptr, g.cone_idx)
 
+    def _kargs_tree(self):
+        g = self.geo
+        return (self.X, self.Y, self.xrow, self.label, self.noff, self.cfg.double_odf, g.u_dir,
+                g.u_parent, g.u_d1, g.u_skip, g.u_eptr, g.e_vol, g.e_nbr, g.e_trip, g.d1_ptr,
+                g.t_nbr, g.t_bin, g.cone_ptr, g.cone_idx)
+
     _CACHE_KEYS = ("Q_ptr", "Q_slot", "Q_w", "R_ptr", "R_ind", "R_val", "dead", "tmpl_n", "tmpl_b")
 
     def _build_matrices(self):
         nb, Nt = self.nb, self.t_lin.size
         tn, tb, slot_of = class_templates(self.geo)
         self.tmpl_n, self.tmpl_b = tn, tb
-        X, Y, xrow, label, noff, dbl, *paths = self._kargs()
-        p_vol, p_dirs, p_len, p_nbr, p_trip, d1_ptr, t_nbr, t_bin, cptr, cidx = paths
+        targs = self._kargs_tree()
+        tau = float(self.cfg.stop_mass)
         Ns = Nt * nb
         q_slot, q_w = _Grower(np.uint8 if tn.shape[1] <= 256 else np.uint16), _Grower(np.float64)
         r_ind, r_w = _Grower(np.int32), _Grower(np.float64)
@@ -175,9 +187,8 @@ class Chain:
             vl = self.t_lin[s:s + chunk]
             out = np.empty((vl.size, nb, 26, nb))
             dead = np.empty((vl.size, nb))
-            K.chunk_blocks(vl, X, Y, xrow, label, noff, dbl, p_vol, p_dirs, p_len, p_nbr, p_trip,
-                           d1_ptr, t_nbr, t_bin, cptr, cidx, self.geo.bin_ptr, self.geo.bin_idx, out, dead)
-            qp, qs, qw, rp, ri, rw, dd = K.stencil_rows(vl, out, dead, label, noff, self.aindex, slot_of)
+            K.chunk_blocks_tree(vl, *targs, self.geo.bin_ptr, self.geo.bin_idx, out, dead, tau)
+            qp, qs, qw, rp, ri, rw, dd = K.stencil_rows(vl, out, dead, self.label, self.noff, self.aindex, slot_of)
             del out
             r0, r1 = s * nb, (s + vl.size) * nb
             Q_ptr[r0 + 1:r1 + 1] = qp[1:] + q_w.n
@@ -235,7 +246,8 @@ class Chain:
     def launch_halves(self, seed_vlin, dptr, dirs, out, dead):
         """First exits of half-walks; out (H, 26, nb, ncomp)."""
         o = np.empty(out.shape[:3])
-        K.launch_batch(seed_vlin, dptr, dirs, *self._kargs(), self.nb, o, dead)
+        K.launch_batch_tree(seed_vlin, dptr, dirs, *self._kargs_tree(), self.nb, o, dead,
+                            float(self.cfg.stop_mass))
         out[..., 0] = o
 
     def release_pmfs(self):

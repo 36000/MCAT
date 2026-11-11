@@ -14,10 +14,13 @@ pyAFQ provides the fODF, tissue, seeds, bundle definitions and warped ROIs.
 """
 from .afq import run
 from .chain import Chain, ChainConfig
+from .connectome import ConnectomeResult, build_connectome
 from .core import bundle_core
 from .fields import BundleFields, endpoint_patches, flux_orientation, restrict_endpoints
-from .fixels import fixel_streamlines, segment_lobes, write_fixel_directory
-from .solve import prepare_launches, segment_bundles
+from .fixels import DirectedFixelChain, fixel_streamlines, segment_lobes, write_fixel_directory
+from .geometry import class_chord_lengths
+from .quantify import BundleQuantification, quantify_bundle
+from .solve import prepare_launches, segment_bundles, solve_bundle_cascade
 
 
 def view(*args, **kwargs):
@@ -27,6 +30,8 @@ def view(*args, **kwargs):
     return _view(*args, **kwargs)
 
 
-__all__ = ["BundleFields", "Chain", "ChainConfig", "bundle_core", "endpoint_patches", "fixel_streamlines",
-           "flux_orientation", "prepare_launches", "restrict_endpoints", "run", "segment_bundles", "segment_lobes",
-           "view", "write_fixel_directory"]
+__all__ = ["BundleFields", "BundleQuantification", "Chain", "ChainConfig", "ConnectomeResult",
+           "DirectedFixelChain", "build_connectome", "bundle_core", "class_chord_lengths",
+           "endpoint_patches", "fixel_streamlines", "flux_orientation", "prepare_launches",
+           "quantify_bundle", "restrict_endpoints", "run", "segment_bundles", "segment_lobes",
+           "solve_bundle_cascade", "view", "write_fixel_directory"]

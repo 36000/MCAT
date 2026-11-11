@@ -234,17 +234,20 @@ segmentation; times the fixel's fibre density it is the bundle's part of that de
 share of the solved bundles' streamlines.
 
 On one ds008825 session (1.7 mm, 130 116 white-matter voxels): 257 134 fixels, 1.98 per
-voxel (35% of voxels one, 43% two, 14% three, 5% four), segmented in 24 s; values for a
-bundle in 27 s.  The CST's fixel values sum to 7179.4 against a density of 7180.9, with 1.6
-in directions of no fixel.  In the 14 796 CST voxels with more than one fixel, the fixel
-with the most CST holds a median 85% of the voxel's CST (10th percentile 55%): the
-projection separates the CST from the fibres it crosses.  The share of all traffic is small
-everywhere (at most 0.24; median 0.03 in the CST's densest fixels), because the
-unconditioned chain counts every walk from every seed through the fixel, and in the
-internal capsule most of those are not the pyAFQ-defined CST: thalamocortical and
-corticopontine walks, walks ending in the deep grey matter, walks the include ROIs reject.
-For a segmentation of the fixels among bundles, the share of the solved bundles' streamlines
-is the better-conditioned quantity.
+voxel (35% of voxels one, 43% two, 14% three, 5% four).  With the L1-cache parallel Numba
+lobe segmentation (`_segment_numba`) and pre-aggregated `(n_fixels, 26)` class-to-fixel
+weights cached on `Lobes` (`_w_fix`, `_w_unass`), `segment_lobes` runs in 4–20 s across the
+whole brain and `fixel_streamlines` projects any bundle onto all 257 134 fixels in 40 ms
+(a single `einsum` over the 26 direction classes).  The CST's fixel values sum to 7179.4
+against a density of 7180.9, with 1.6 in directions of no fixel.  In the 14 796 CST voxels
+with more than one fixel, the fixel with the most CST holds a median 85% of the voxel's CST
+(10th percentile 55%): the projection separates the CST from the fibres it crosses.  The
+share of all traffic is small everywhere (at most 0.24; median 0.03 in the CST's densest
+fixels), because the unconditioned chain counts every walk from every seed through the
+fixel, and in the internal capsule most of those are not the pyAFQ-defined CST:
+thalamocortical and corticopontine walks, walks ending in the deep grey matter, walks the
+include ROIs reject.  For a segmentation of the fixels among bundles, the share of the
+solved bundles' streamlines is the better-conditioned quantity.
 
 Two caveats.  Within a class the split between directions is a model assumption (the fODF
 weighting the chain uses), not independent evidence: two fixels inside the same 35-degree
@@ -252,10 +255,11 @@ class cone are separated only by that weighting.  And the fixels must come from 
 the chain was built from, on its sphere; fixels from another segmentation can be matched by
 direction but not assumed identical.
 
-The exact version of this is a chain whose states are the fixels themselves, (voxel, lobe)
-instead of (voxel, 26 classes), with transitions weighted by lobe-to-lobe compatibility
-across the shared face: the bundle occupancy at a state is then the per-fixel density with
-no projection, and the chain has about three states per voxel.
+The exact version of this is a chain whose states are the directed fixel half-lobes
+themselves, `(voxel, lobe, +/-)` instead of `(voxel, 26 classes)`: `mcat.DirectedFixelChain`
+implements this directly (`lobe_conditioned=True` restricts intra-voxel propagation to the
+active lobe's fODF $X_{v,\ell}$, cutting states by $11\times$, transitions by $30\times$,
+and $42^\circ$ acute crossing leakage from $52.6\%$ to $9.5\%$).
 
 **Smoothing for fixel-based analysis.**  MRtrix smooths fixel data along a fixel-to-fixel
 connectivity matrix built from a whole-brain tractogram (the fraction of streamlines through
@@ -265,3 +269,242 @@ is the one-step connectivity, and the probability that a walk through fixel *i* 
 fixel *j* a few voxels away is the corresponding multi-step transition (forwards, and
 backwards for the part of the walk before *i*).  Writing that as MRtrix's sparse
 connectivity format is a possible extension; it is not in this implementation.
+
+---
+
+## 10. Extensions: doing streamline-era analyses without streamlines
+
+Giving up individual streamlines raises an immediate practical question: how do you do the
+downstream quantitative analyses that normally depend on a tractogram — extracting a 1-D
+bundle core for tractometry, measuring where a bundle branches or fans, filtering out seeding
+and length biases (SIFT / SIFT2), or building a whole-brain structural connectivity matrix?
+
+Because MCAT solves the exact transition-path fields (density per direction class, 26-neighbour
+reactive flux, and fixel traffic) over the entire white-matter graph, every one of these
+streamline-era operations has a direct, closed-form counterpart on the Markov chain — with
+no Monte Carlo sampling noise and no global optimization loop.  `mcat.run` computes and writes
+the resulting bundle maps (`_desc-afd_map`, `_desc-tdimm_map`, `_desc-qharmonic_map`,
+`_desc-coherence_map`, `_desc-keff_map`, and `_desc-core.tck`) by default.
+
+### 10.1 Making the bundle core and harmonic along-tract coordinates (`mcat.core`, `mcat.quantify`)
+
+In streamline tractography, a bundle's 1-D core is made by clustering streamlines (e.g.
+QuickBundles) and averaging their coordinates, which can drift toward the inside of a curve
+or jump when outlying fans are included.  MCAT extracts both a 1-D centerline (`bundle_core`)
+and a 3-D intrinsic coordinate field (`harmonic_tractometry`) directly from the bundle's
+density and reactive flux:
+
+**Two-pass cross-section ridge core (`mcat.core.bundle_core`).**  A single shortest-path
+search through a density map cuts corners around curved tracts (such as the arcuate
+fasciculus or corpus callosum), because every step carries a positive cost per unit length.
+`bundle_core` eliminates the length penalty in two Dijkstra passes:
+1. **Endpoint anchors (`split_ends`).**  The bundle's absorbing endpoints (`endpoints_map`)
+   are partitioned into start and end regions (from the bundle's `start`/`end` ROIs, left vs.
+   right hemisphere for callosal tracts, or two principal-axis clusters).  Each end is
+   anchored at the white-matter body voxel ($\text{density} \ge 10^{-2} \times \text{peak}$)
+   nearest the endpoint-weighted centroid (or smoothed mode with `anchor="mode"`).
+2. **Pass 1: corridor path.**  Dijkstra on the 26-neighbour white-matter graph with edge cost
+   $-\log(d / d_{\max})$ per mm finds the high-density corridor connecting the two anchors.
+3. **Cross-section partition.**  Multi-source Dijkstra outward from all nodes of the Pass-1
+   path simultaneously assigns every voxel in the bundle to its nearest Pass-1 node in the
+   density metric.  This slices the 3-D bundle into natural cross-sections orthogonal to the
+   corridor.
+4. **Pass 2: zero-penalty ridge path.**  Each voxel's density is divided by the maximum
+   density *within its own cross-section*, $r(v) = d(v) / \max_{u \in \text{cs}(v)} d(u)$,
+   and Dijkstra is run a second time with edge cost $-\log r(v)$.  On the peak of every
+   cross-section, $r(v) = 1$ and $-\log r(v) = 0$: following the ridge costs **zero per mm**,
+   so the second path stays centered on the density ridge all the way around tight bends
+    before Gaussian smoothing ($\sigma = 1.5$ voxels) and resampling to 100 equidistant
+   nodes (`_desc-core.tck`, `_desc-core_path.tsv`).
+
+**Harmonic committor coordinate (`q_harmonic`, `_desc-qharmonic_map.nii.gz`) and conserved cut-flux.**
+While the ridge core is a single curve, a fanning sheet needs an intrinsic position
+$q(v) \in [0, 1]$ at *every* voxel of the bundle.  During `_solve_group`, MCAT accumulates the
+26-neighbour reactive edge flux $F_b(u, v) = \sum_c \text{sign}_c\, S_c(u)\, Q(u, v)\, \beta_c(v)$
+on the fly (without storing `BundleFields`).  Symmetrizing the flux into an undirected
+conductance graph $W_{uv} = \frac{1}{2}(F_b(u, v) + F_b(v, u))$ and solving the sparse
+Laplace–Beltrami Dirichlet problem
+
+$$(L_W + \operatorname{diag}(g_S + g_E))\, q = g_E \qquad (q = 0 \text{ at Start},\; q = 1 \text{ at End})$$
+
+gives the forward committor coordinate $q_{\text{harmonic}}(v) \in [0, 1]$.  Because $q$ is
+harmonic with respect to the bundle's own traffic:
+- Its level sets $\Sigma_\theta = \{v : q(v) = \theta\}$ are everywhere orthogonal to the
+  local bundle flow and never fold back on C-shaped tracts like the arcuate.
+- By the discrete Gauss–Green theorem, the net reactive flux crossing any level set
+  $\Sigma_\theta$,
+  $$\mathcal{I}_{\text{cut}}(\theta) = \sum_{u:\,q(u) < \theta,\; v:\,q(v) \ge \theta} \big(F_b(u, v) - F_b(v, u)\big),$$
+  is conserved across the interior of the tract and equals the bundle's expected streamline
+  count (for instance, on `CGC_R`, $\mathcal{I}_{\text{cut}}(\theta)$ stays between `128.9`
+  and `132.4` across all interior bins against `131.7` expected streamlines).
+
+---
+
+### 10.2 Measuring branching, fanning, and fiber coherence (`mcat.quantify`)
+
+In a crossing-fiber region (such as the centrum semiovale, where the corticospinal tract,
+arcuate/SLF, and corpus callosum intersect), the raw fODF has multiple lobes, so voxel-level
+dispersion cannot tell whether *this* bundle is fanning or merely crossing another tract.
+The bundle's 26-neighbour outgoing reactive flux $F_b(v, n)$ (`n = 0..25`) solves this
+directly: because each transition is weighted by the bundle's own completion probability
+$\beta_c$, $F_b(v, n)$ carries **only the steps taken by walks that complete bundle $b$**.
+
+Normalizing $F_b(v, n)$ by the voxel's through-flux $T_b(v) = \sum_{n=0}^{25} F_b(v, n)$ gives
+the bundle-specific transition distribution $p_b(n \mid v) = F_b(v, n) / T_b(v)$ over the 26
+lattice offsets (with unit vectors $\hat{u}_n$).  `mcat.quantify.routing_entropy_and_coherence`
+extracts two seed-invariant maps from $p_b(n \mid v)$:
+
+1. **Effective branching number $K_{\text{eff}}(v) \in [1, 26]$ (`_desc-keff_map.nii.gz`) and Shannon routing entropy $H_b(v)$:**
+   $$H_b(v) = -\sum_{n=0}^{25} p_b(n \mid v) \log p_b(n \mid v), \qquad K_{\text{eff}}(v) = \exp\!\big(H_b(v)\big).$$
+   $K_{\text{eff}}(v)$ is the perplexity — the effective number of lattice neighbour
+   directions into which the bundle's traffic branches at voxel $v$.  In a tight anatomical
+   trunk (the mid-cingulate bundle or the internal capsule), walkers stay within a narrow forward
+   cone ($K_{\text{eff}} \approx 5.0\text{–}6.7$); where the bundle bifurcates or fans into
+   the cortex, $K_{\text{eff}}$ rises to $8.6\text{–}9.9$.
+2. **Directional flux coherence $\text{coh}_b(v) \in [0, 1]$ (`_desc-coherence_map.nii.gz`):**
+   From the second-moment orientation tensor of the bundle's outgoing steps,
+   $$\mathbf{T}_b(v) = \sum_{n=0}^{25} p_b(n \mid v)\, \hat{u}_n \hat{u}_n^\top, \qquad \lambda_1 \ge \lambda_2 \ge \lambda_3 \ge 0, \quad \sum_i \lambda_i = 1,$$
+   the fractional alignment along the principal axis is $\text{coh}_b(v) = \frac{1}{2}(3\lambda_1 - 1) \in [0, 1]$.
+   Plotted along the harmonic coordinate $q \in [0, 1]$, $\text{coh}_b$ and $K_{\text{eff}}$
+   trace an inverted-U and U-shaped profile from cortical fan ($q=0$) through the deep trunk
+   ($q \approx 0.4\text{–}0.5$) to the opposite cortical fan ($q=1$):
+   - **`CGC_R`:** coherence rises from `0.58` ($q=0.05$) to **`0.80`** in the mid-cingulate
+     trunk ($q=0.45$) and drops to `0.50` ($q=0.95$), while $K_{\text{eff}}$ tightens from
+     `7.74` down to **`5.04` neighbours** in the trunk before fanning out to **`8.64`** at the
+     posterior end.
+   - **`ARC_L`:** coherence peaks at **`0.70`** ($K_{\text{eff}} = \mathbf{6.71}$) in the
+     fronto-parietal trunk ($q=0.35$), dips to `0.54` ($K_{\text{eff}} = 9.85$) as fibres
+     turn around the perisylvian bend ($q=0.65$), and fans out at the frontal and temporal
+     terminations (`0.50–0.52`, $K_{\text{eff}} = 8.62\text{–}9.77$).
+
+![Harmonic Committor Along-Tract Profiles Across ARC_L, CST_L, and CGC_R](benchmarks/fig3_along_tract_profiles.png)
+
+---
+
+### 10.3 Analytical SIFT and SIFT2 on bundles (`mcat.quantify`)
+
+In streamline tractography, raw streamline counts and visitation maps (`density_t`) suffer
+from two well-known confounds:
+1. **Seeding scale:** seeding $10\times$ as many streamlines multiplies every voxel's visit
+   count by $10\times$.
+2. **Length bias ($L$-bias) and bottleneck over-seeding:** a pathway twice as long takes twice
+   as many voxel steps per streamline and receives twice as many volume seeds, inflating its
+   apparent weight relative to the true intra-axonal fibre density measured by the diffusion
+   fODF.
+
+MRtrix's SIFT and SIFT2 address this by fitting per-streamline weights $w_s$ over millions of
+streamlines so that their weighted sum through each fixel $f$ matches that fixel's Apparent
+Fibre Density ($\text{AFD}_f$, the spherical integral of the fODF lobe in steradians).
+
+**In MCAT, SIFT2 requires no global optimization — it is an exact closed-form ratio on the
+segmented fixels (`mcat.quantify.afd_tract_metrics`):**
+1. One unconditioned whole-brain solve (`segment_bundles(chain, [dict(name="whole_brain")], launches)`)
+   computes the total expected Markov traffic $n_{\text{all}}(f)$ through every fixel $f = (v, \ell)$.
+2. Each bundle $b$'s solve gives its expected traffic $n_b(f)$ through fixel $f$ (`40 ms` via
+   `lobes._w_fix`).
+3. Their ratio $\text{share}_b(f) = n_b(f) / n_{\text{all}}(f) \in [0, 1]$ is the exact
+   probability that a walker traversing fixel $f$ belongs to bundle $b$.  Any global scaling
+   of seed density scales both numerator and denominator identically and **cancels out**.
+4. Multiplying by the lobe's physical Apparent Fibre Density $\text{AFD}(f)$ (`lobes.integral[f]`)
+   gives the bundle's intra-axonal fibre density in fixel $f$ and voxel $v$:
+   $$\text{AFD}_b(f) = \frac{n_b(f)}{n_{\text{all}}(f)}\, \text{AFD}(f), \qquad \text{AFD}_b(v) = \sum_{f \in v} \text{AFD}_b(f) \quad (\texttt{\_desc-afd\_map.nii.gz}).$$
+5. Summing $\text{AFD}_b(f)$ over all fixels (multiplied by voxel volume $V_{\text{vox}}$ and
+   normalized by the subject's mean single-fibre white-matter AFD $\overline{\text{AFD}}_{\text{WM}}$)
+   gives the **AFD-calibrated tract volume** $\mathcal{V}_{\text{AFD}}(b)$ in $\text{mm}^3$.
+6. Finally, multiplying each direction class $d$ by its MITTENS physical chord length
+   $\bar{\ell}_d$ in mm (`geometry.class_chord_lengths`, saved per voxel as
+   `_desc-tdimm_map.nii.gz`) gives the bundle's exact Markov mean streamline length
+   $\bar{L}_b = \big(\sum_v \text{TDI}_{\text{mm}}(v)\big) / N_{\text{streamlines}}(b)$.
+   Dividing $\mathcal{V}_{\text{AFD}}(b)$ by $\bar{L}_b$ removes the length bias $L$, yielding
+   the **effective axonal cross-sectional area** in $\text{mm}^2$:
+   $$\mathcal{A}_{\text{AFD}}(b) = \frac{\mathcal{V}_{\text{AFD}}(b)}{\bar{L}_b} \quad (\text{mm}^2).$$
+
+On `sub-22449_ses-01`, subsampling the seeds by $10\times$ (`86 405` $\to$ `8 641` seeds)
+causes raw visitation density (`density_t.sum()`) to drop by **`10.3×–10.5×` (`-90.3%`)**,
+whereas the analytical SIFT2 quantities remain invariant:
+
+| Bundle (`sub-22449_ses-01`) | Metric | 100% Seeds (`86 405`) | 10% Seeds (`8 641`) | Relative Change |
+|---|---|---:|---:|---|
+| `ARC_L` | Raw visitation sum (`density_t.sum()`) | `18 767.7` | `1 826.6` | **-90.3% (10.3× drop)** |
+| `ARC_L` | Mean streamline length $\bar{L}_b$ | `170.92 mm` | `171.09 mm` | **+0.10%** |
+| `ARC_L` | AFD tract volume $\mathcal{V}_{\text{AFD}}$ | `3 846.6 mm³` | `3 756.9 mm³` | **-2.33%** |
+| `ARC_L` | Effective axonal area $\mathcal{A}_{\text{AFD}}$ | `22.51 mm²` | `21.96 mm²` | **-2.44%** |
+| `CST_L` | Raw visitation sum (`density_t.sum()`) | `7 180.8` | `682.2` | **-90.5% (10.5× drop)** |
+| `CST_L` | Mean streamline length $\bar{L}_b$ | `171.67 mm` | `172.13 mm` | **+0.27%** |
+| `CST_L` | AFD tract volume $\mathcal{V}_{\text{AFD}}$ | `2 341.9 mm³` | `2 250.4 mm³` | **-3.91%** |
+| `CST_L` | Effective axonal area $\mathcal{A}_{\text{AFD}}$ | `13.64 mm²` | `13.07 mm²` | **-4.18%** |
+
+![Left Arcuate Fasciculus (ARC_L) 6-Panel Quantification Atlas](benchmarks/fig1_arc_l_maps.png)
+
+![10x Seed-Subsampling Invariance: Raw Visitation vs. AFD-Calibrated Density](benchmarks/fig4_seed_invariance.png)
+
+---
+
+### 10.4 Whole-brain SIFT2 structural connectivity matrices (`mcat.connectome`)
+
+For a cortical/subcortical parcellation with $R$ regions (e.g. `Schaefer2018` with $R = 100$
+or $400$ parcels, or `SynthSeg`'s native Desikan–Killiany parcellation), there are
+$\binom{R}{2}$ region pairs and no predefined waypoint masks.  Solving $\binom{R}{2} = 4\,950$
+separate bundle problems is unnecessary: a walk passing through any interior fixel
+$f = (v, \ell)$ connects parcel $i$ and parcel $j$ if and only if its forward half-walk is
+absorbed in parcel $i$ and its antipodal backward half-walk is absorbed in parcel $j$.
+
+`mcat.connectome.build_connectome` computes the entire $R \times R$ connectome in **two
+batched $R$-column backward solves**, with zero forward solves and zero waypoint masks:
+
+1. **Backward hitting probabilities $B$ ($N_{\text{states}} \times R$):**
+   Solve $(I - Q) B = R_{\text{abs}} E_{\text{GM}}$, where $E_{\text{GM}}(a, r) = 1$ if
+   absorbing voxel $a$ belongs to parcel $r$.  Now $B(s, r)$ is the exact probability that a
+   walk starting in state $s = (v, d)$ ends in parcel $r$.
+2. **Backward expected path lengths $M_{\text{len}}$ ($N_{\text{states}} \times R$):**
+   By differentiating the path-length generating function at zero, the expected physical
+   distance ($\text{mm}$) traveled from state $s$ to parcel $r$ satisfies the exact same
+   linear system with right-hand side $d_{\text{chord}}(s)\, B(s, r)$:
+   $$(I - Q) M_{\text{len}} = d_{\text{chord}} \odot B.$$
+3. **Closed-form $R \times R$ fixel projection:**
+   Each batch of columns of $B$ and $M_{\text{len}}$ is projected immediately onto each
+   fixel's forward lobe weights $w_f^+$ (`lobes._w_fix`) and antipodal backward lobe weights
+   $w_f^-$ (`lobes._w_fix[:, OPP_CLASS]`), giving the forward and backward hitting probability
+   vectors $p_f^+, p_f^- \in \mathbb{R}^R$ and conditional distance vectors $\ell_f^+, \ell_f^- \in \mathbb{R}^R$
+   for every fixel $f$.  Partitioning each fixel's physical intra-axonal volume
+   $v_{\text{AFD}}(f) = \text{AFD}(f)\, V_{\text{vox}} / \overline{\text{AFD}}_{\text{WM}}$
+   across the parcel pairs $(i, j)$ that its bidirectional walks connect reduces to a single
+   matrix multiplication over fixels:
+   $$V_{\text{AFD}}(i, j) = \sum_{f=1}^{N_{\text{fixels}}} v_{\text{AFD}}(f)\, \frac{p_f^+(i)\, p_f^-(j) + p_f^+(j)\, p_f^-(i)}{2\, Z_f}, \qquad \mathcal{A}_{\text{AFD}}(i, j) = \frac{V_{\text{AFD}}(i, j)}{\bar{L}_{ij}},$$
+   where $\bar{L}_{ij}$ is the AFD-weighted mean streamline length ($\text{mm}$) between
+   parcels $i$ and $j$.  When `launches` are also supplied, projecting $B$ and $M_{\text{len}}$
+   onto the seed peak-pairs simultaneously yields the seed-launched expected streamline matrix
+   $N_{\text{streamlines}}(i, j)$.
+
+**Benchmark on `sub-22449_ses-01` (`Schaefer2018`, 100 parcels, 7 networks, warped from MNI to subject dMRI space):**
+- **Runtime:** **`135.1 s`** total (`70.1 s` for $B$ at `tol=1e-4`, `56.1 s` for $M_{\text{len}}$
+  at `len_tol=1e-3`, and `1.15 s` to assemble all four $100 \times 100$ matrices).
+- **Mass accounting:** `257 117` of `257 134` white-matter fixels (`99.993%`) connect to the
+  cortical parcels, partitioning `639 260 mm³` of total white-matter AFD volume into
+  `234 727 mm³` of inter-parcel connectivity ($i \ne j$) and `2 018.3 mm²` of total
+  inter-parcel effective axonal cross-sectional area.
+- **Length debiasing:** Callosal (inter-hemispheric) connections are **$1.60\times$ longer**
+  than intra-hemispheric connections (`215.8 mm` vs. `134.6 mm`).  Dividing $V_{\text{AFD}}(i, j)$
+  by $\bar{L}_{ij}$ removes this $1.60\times$ length inflation, reducing the callosal share of
+  total weight from `18.38%` to `11.06%` and raising within-7-network modularity from `25.39%`
+  to **`30.27%`**.
+- **Exact seed invariance:** $\mathcal{A}_{\text{AFD}}(i, j)$ correlates strongly with
+  seed-launched expected streamlines $N_{\text{streamlines}}(i, j)$ (**`r = 0.9525`**,
+  `r = 0.9636` log-transformed), while exhibiting **`0.00%` difference under $10\times$ seed
+  subsampling** because $V_{\text{AFD}}$ and $\mathcal{A}_{\text{AFD}}$ depend only on the
+  fODF fixels and the Markov chain $Q$.
+
+```python
+from mcat import build_connectome, segment_lobes
+
+lobes = segment_lobes(chain, sf_sh, sphere_vertices, sphere_edges, affine)
+conn = build_connectome(chain, lobes, parcel_dseg_in_dwi_space, launches=launches)
+
+conn.afd_area_mm2        # (R, R) SIFT2 length-debiased cross-sectional area (mm^2)
+conn.afd_volume_mm3      # (R, R) SIFT2 intra-axonal tract volume (mm^3)
+conn.mean_length_mm      # (R, R) expected streamline length (mm)
+conn.streamline_count    # (R, R) seed-launched expected streamlines
+```
+
+![MCAT Analytical SIFT2 Structural Connectivity Matrices on Schaefer-100](benchmarks/fig5_connectome_matrices.png)
+
