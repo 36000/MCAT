@@ -72,7 +72,7 @@ venv.bak/
 .python-version
 
 # Docs builds
-docs/_build/
+docs/build/
 site/
 
 # Editors and OS
