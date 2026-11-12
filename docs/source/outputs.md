@@ -10,7 +10,7 @@ pyAFQ's own outputs.
 | `..._desc-visitodf_dwimap.nii.gz` | visitation ODF: the directions the bundle's streamlines travel in each voxel, as SH in the fODF's basis (DIPY descoteaux07, lmax 8), in expected visits per steradian; it integrates to the density. Written where the density is at least 1e-3 of its peak |
 | `..._desc-seedprob_probmap.nii.gz` | probability that the streamline seeded in each interface voxel belongs to the bundle |
 | `..._desc-start_mask`, `_desc-end_mask` | the endpoint ROIs used (pyAFQ's `dist_to_atlas` applied) |
-| `..._desc-core_path.tsv`, `_desc-core.tck` | the bundle's core: the cross-section ridge path, 100 nodes |
+| `..._desc-core_path.tsv`, `_desc-core.trx` | the bundle's core: the cross-section ridge path, 100 nodes |
 | `..._desc-summary.json` | settings, solve diagnostics, mass check |
 | `<sub>_desc-mpat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
 | `<sub>_desc-mpat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |

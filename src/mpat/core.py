@@ -224,21 +224,25 @@ def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, f
     return Core(xyz, dens, length, how, info, first)
 
 
-def write_core(core, prefix, extra=None):
-    """``<prefix>_desc-core_path.tsv`` (nodes) and ``<prefix>_desc-core.tck`` (one streamline)."""
+def write_core(core, prefix, ref, extra=None):
+    """``<prefix>_desc-core_path.tsv`` (nodes) and ``<prefix>_desc-core.trx`` (one streamline, on
+    the grid of ``ref``, a nibabel image such as the density map)."""
+    from dipy.io.stateful_tractogram import Space, StatefulTractogram
+    from dipy.io.streamline import save_tractogram
+
     tsv = f"{prefix}_desc-core_path.tsv"
     with open(tsv, "w") as fh:
         fh.write("node\tx_mm\ty_mm\tz_mm\tdensity_rel_peak\n")
         for i, (p, v) in enumerate(zip(core.xyz, core.density)):
             fh.write(f"{i}\t{p[0]:.3f}\t{p[1]:.3f}\t{p[2]:.3f}\t{v:.6g}\n")
-    tck = f"{prefix}_desc-core.tck"
-    nib.streamlines.save(nib.streamlines.Tractogram([core.xyz.astype(np.float32)],
-                                                    affine_to_rasmm=np.eye(4)), tck)
+    trx = f"{prefix}_desc-core.trx"
+    save_tractogram(StatefulTractogram([core.xyz.astype(np.float32)], ref, Space.RASMM), trx,
+                    bbox_valid_check=False)
     with open(f"{prefix}_desc-core.json", "w") as fh:
         json.dump(dict(method="cross-section ridge path (mpat.core)", ends=core.ends,
                        n_nodes=int(len(core.xyz)), length_mm=round(core.length_mm, 1),
                        **core.info, **(extra or {})), fh, indent=1)
-    return tsv, tck
+    return tsv, trx
 
 
 def bundle_files(folder):
@@ -271,5 +275,5 @@ def write_cores(folder, n_nodes=100, anchor="centroid"):
         except ValueError as e:
             log.warning("%s: no core (%s)", name, e)
             continue
-        write_core(c, f["prefix"])
+        write_core(c, f["prefix"], img)
         log.info("core %-24s %4.0f mm, ends: %s", name, c.length_mm, c.ends)

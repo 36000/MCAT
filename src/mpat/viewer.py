@@ -221,9 +221,10 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
             if not (f.get("include") or f.get("exclude")):
                 log.warning("%s: no include / exclude masks on disk (written by mpat.run since 2026-11-06)", name)
         # core: written by mpat.run; computed here if missing
-        tck, xyz = f["prefix"] + "_desc-core.tck", None
-        if op.exists(tck):
-            xyz = nib.streamlines.load(tck).streamlines[0]
+        trx, xyz = f["prefix"] + "_desc-core.trx", None
+        if op.exists(trx):
+            from dipy.io.streamline import load_tractogram
+            xyz = load_tractogram(trx, "same", bbox_valid_check=False).streamlines[0]
         elif f["endpoints"] is not None and dfull.max() > 0:
             load = lambda k: (np.asarray(nib.load(f[k]).dataobj) > 0) if f[k] else None  # noqa: E731
             try:
@@ -233,7 +234,7 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
                 log.warning("%s: no core (%s)", name, e)
             else:
                 if write_missing_cores:
-                    write_core(c, f["prefix"])
+                    write_core(c, f["prefix"], img)
                 xyz = c.xyz
         if xyz is not None:
             # a triangulated tube: NiiVue's streamline (.tck) renderer draws nothing in some
