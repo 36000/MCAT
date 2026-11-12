@@ -2,6 +2,7 @@
 import nibabel as nib
 import numpy as np
 import pytest
+from dipy.io.streamline import load_tractogram
 
 from mpat.core import bundle_core, split_ends, write_core
 
@@ -87,10 +88,10 @@ def test_split_ends_by_include_order():
 def test_write_core(tmp_path):
     d, ep, start, end, _ = _arc_bundle()
     c = bundle_core(d, np.eye(4), ep, start, end, n_nodes=50)
-    tsv, tck = write_core(c, str(tmp_path / "x_bundle-A"))
+    tsv, trx = write_core(c, str(tmp_path / "x_bundle-A"), nib.Nifti1Image(d.astype(np.float32), np.eye(4)))
     rows = np.loadtxt(tsv, skiprows=1)
     assert rows.shape == (50, 5) and np.allclose(rows[:, 1:4], c.xyz, atol=1e-3)
-    sl = nib.streamlines.load(tck).streamlines[0]
+    sl = load_tractogram(trx, "same", bbox_valid_check=False).streamlines[0]
     assert np.allclose(sl, c.xyz, atol=1e-4)
 
 
@@ -119,7 +120,7 @@ def test_tube_and_viewer(tmp_path):
     nv = view(tmp_path)
     assert [v.name for v in nv.volumes][1:] == ["ARC_logdensity.nii.gz"]
     assert "mpat_dseg" in nv.volumes[0].name and [m.name for m in nv.meshes] == ["ARC_core.obj"]
-    assert (tmp_path / "sub-01_bundle-ARC_desc-core.tck").exists()     # computed and saved
+    assert (tmp_path / "sub-01_bundle-ARC_desc-core.trx").exists()     # computed and saved
 
 
 def test_glyph_mz3():

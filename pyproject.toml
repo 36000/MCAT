@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }
 dependencies = [
     "numpy>=1.26", "scipy>=1.11", "nibabel>=5", "numba>=0.59", "dipy>=1.9", "scikit-image",
-    "pyAFQ>=3.4",
+    "pyAFQ>=3.4", "trx-python",
     # MITTENS v2 is not on PyPI yet (it builds with a Rust toolchain via maturin)
     "mittens-dmri @ git+https://github.com/mattcieslak/MITTENS.git",
 ]

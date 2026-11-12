@@ -263,7 +263,7 @@ def test_pyafq_end_to_end(tmp_path):
         assert res[b].info["expected_bundle_streamlines"] > 10
         d = nib.load(out / f"sub-01_bundle-{b}_desc-density_map.nii.gz").get_fdata()
         assert d[own].sum() > 0.99 * d.sum()
-        assert (out / f"sub-01_bundle-{b}_desc-core.tck").exists()
+        assert (out / f"sub-01_bundle-{b}_desc-core.trx").exists()
         # visitation ODF: integrates to the density, points along the bundle (A: x, B: y),
         # including where the two bundles cross
         from mpat.geometry import _sh_basis
