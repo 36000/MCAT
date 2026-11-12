@@ -64,8 +64,24 @@ def test_split_ends_without_rois():
     assert how == "two endpoint clusters" and a.sum() == 1 and b.sum() == 1 and not (a & b).any()
     roi = np.zeros(shape, bool)
     roi[27, 5, 5] = True
-    a, b, how = split_ends(ep, aff, end=roi)
-    assert how == "end ROI vs all other endpoints" and a[27, 5, 5] and b[2, 5, 5]
+    a, b, how = split_ends(ep, aff, end=roi)              # as pyAFQ: the end ROI is the last end
+    assert how == "all other endpoints vs end ROI" and a[2, 5, 5] and b[27, 5, 5]
+    a, b, how = split_ends(ep, aff, start=roi)
+    assert how == "start ROI vs all other endpoints" and a[27, 5, 5] and b[2, 5, 5]
+
+
+def test_split_ends_by_include_order():
+    """No start / end ROI: the end nearer the first include ROI comes first, as pyAFQ orients
+    streamlines from its first include ROI to its last -- even across hemispheres."""
+    shape = (30, 10, 10)
+    aff = np.eye(4)
+    aff[0, 3] = -15.0
+    ep = np.zeros(shape)
+    ep[2, 5, 5] = ep[27, 5, 5] = 1.0
+    inc = np.zeros(shape, np.uint8)
+    inc[24, 5, 5], inc[15, 5, 5], inc[5, 5, 5] = 1, 2, 3   # right, midline, left (pyAFQ's callosum)
+    a, b, how = split_ends(ep, aff, include=inc)
+    assert how == "first vs last include ROI" and a[27, 5, 5] and b[2, 5, 5]
 
 
 def test_write_core(tmp_path):

@@ -228,7 +228,7 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
             load = lambda k: (np.asarray(nib.load(f[k]).dataobj) > 0) if f[k] else None  # noqa: E731
             try:
                 c = bundle_core(dfull, img.affine, np.asarray(nib.load(f["endpoints"]).dataobj), load("start"),
-                                load("end"))
+                                load("end"), include=np.asarray(nib.load(f["include"]).dataobj) if f["include"] else None)
             except ValueError as e:
                 log.warning("%s: no core (%s)", name, e)
             else:

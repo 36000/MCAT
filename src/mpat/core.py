@@ -9,9 +9,12 @@ Method (parameter-free apart from where the ends are; two shortest-path searches
    centroid of the walkers' endpoints at that end, weighted by the endpoint density
    (``endpoints_map``) -- or, with ``anchor="mode"``, nearest the endpoint density's peak
    (smoothed over a voxel), where most walkers end, which a broad or curved ending ROI (an
-   eye, a gyrus) pulls the centroid away from.  Which endpoints belong to which end: the bundle's start/end ROIs
-   when it has both; its one endpoint ROI vs every other endpoint when it has one; the
-   two hemispheres for a callosal bundle; otherwise two clusters of the endpoints.
+   eye, a gyrus) pulls the centroid away from.  Which endpoints belong to which end, and so
+   which end is node 0, follows pyAFQ's orientation of streamlines: the start ROI is the first
+   end and the end ROI the last (the other endpoints are the other end when the bundle has
+   only one of them); otherwise the endpoints nearer the first include ROI are the first end
+   and those nearer the last the last; otherwise the two hemispheres; otherwise two clusters
+   of the endpoints.
 2. A first most-probable path: Dijkstra on the 26-neighbour voxel graph with cost
    -log(density / peak) per mm.  It finds the right corridor but cuts corners, because
    every step below the peak costs something.
@@ -116,14 +119,25 @@ def _anchor(ep, roi, body, how="centroid"):
     return cand[np.argmin(((cand - c) ** 2).sum(1))]
 
 
-def split_ends(ep, affine, start=None, end=None):
-    """Two boolean masks of endpoint voxels, one per end of the bundle, and a description."""
+def split_ends(ep, affine, start=None, end=None, include=None):
+    """Two boolean masks of endpoint voxels, first end then last end of the bundle, and a
+    description.  ``include``: the include ROIs labelled 1, 2, ... in pyAFQ's order (MPAT
+    ``include_mask``)."""
+    from scipy.ndimage import distance_transform_edt
+
     has = ep > 0
     if start is not None and end is not None and (has & start).any() and (has & end).any():
         return has & start, has & end, "start and end ROIs"
-    for roi, name in ((start, "start"), (end, "end")):
-        if roi is not None and (has & roi).any() and (has & ~roi).any():
-            return has & roi, has & ~roi, f"{name} ROI vs all other endpoints"
+    if start is not None and (has & start).any() and (has & ~start).any():
+        return has & start, has & ~start, "start ROI vs all other endpoints"
+    if end is not None and (has & end).any() and (has & ~end).any():
+        return has & ~end, has & end, "all other endpoints vs end ROI"
+    if include is not None and include.max() > 1:
+        vox = np.sqrt((affine[:3, :3] ** 2).sum(0))
+        first = has & (distance_transform_edt(include != 1, vox) <
+                       distance_transform_edt(include != include.max(), vox))
+        if first.any() and (has & ~first).any():
+            return first, has & ~first, "first vs last include ROI"
     ijk = np.argwhere(has)
     if len(ijk) < 2:
         raise ValueError(f"{len(ijk)} endpoint voxel(s): no two ends to split")
@@ -149,11 +163,12 @@ def split_ends(ep, affine, start=None, end=None):
 
 
 def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, floor=1e-6,
-                body=1e-2, smooth=1.5, anchor="centroid"):
+                body=1e-2, smooth=1.5, anchor="centroid", include=None):
     """Cross-section ridge path of one bundle (see module docstring).
 
     density, endpoints  3-D arrays on the same grid (MPAT ``density_map``, ``endpoints_map``)
     start, end          optional boolean endpoint ROIs (MPAT ``start_mask``, ``end_mask``)
+    include             optional include ROIs labelled 1, 2, ... in pyAFQ's order (MPAT ``include_mask``)
     floor               voxels with density below floor x peak are left out of the graph
     body                anchors are placed on voxels with density >= body x peak
     anchor              "centroid" (default) or "mode": where in each end's endpoints to anchor
@@ -167,7 +182,7 @@ def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, f
         raise ValueError("empty density map")
     dn = d / d.max()
     vox_mm = float(np.abs(np.linalg.det(affine[:3, :3])) ** (1 / 3))
-    S_roi, E_roi, how = split_ends(ep, affine, start, end)
+    S_roi, E_roi, how = split_ends(ep, affine, start, end, include)
     keep = dn > floor
     lab, _ = label(keep, np.ones((3, 3, 3)))
     core_lab = lab[np.unravel_index(np.argmax(dn), dn.shape)]
@@ -251,7 +266,8 @@ def write_cores(folder, n_nodes=100, anchor="centroid"):
         load = lambda k: (np.asarray(nib.load(f[k]).dataobj) > 0) if f[k] else None  # noqa: E731
         try:
             c = bundle_core(np.asarray(img.dataobj), img.affine, np.asarray(nib.load(f["endpoints"]).dataobj),
-                            load("start"), load("end"), n_nodes, anchor=anchor)
+                            load("start"), load("end"), n_nodes, anchor=anchor,
+                            include=np.asarray(nib.load(f["include"]).dataobj) if f["include"] else None)
         except ValueError as e:
             log.warning("%s: no core (%s)", name, e)
             continue
