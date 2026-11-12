@@ -2,7 +2,7 @@
 
 MITTENS enumerates every hop sequence a fiber can take inside a voxel before it exits
 into one of the 26 neighbours, with the exact volume of start points that realise it.
-MCAT adds what MITTENS's first-order model does not need: the last hop's direction class
+MPAT adds what MITTENS's first-order model does not need: the last hop's direction class
 (the walker's memory, carried into the next voxel) and each path's box of start points
 (the spatial-moment closure).
 """

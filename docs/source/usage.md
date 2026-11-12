@@ -2,21 +2,21 @@
 
 ## From Python
 
-MCAT runs on top of a pyAFQ
+MPAT runs on top of a pyAFQ
 [`ParticipantAFQ`](https://tractometry.org/pyAFQ/reference/api.html), or every participant of a
-`GroupAFQ`. pyAFQ computes the derivatives MCAT needs: the fODF, the tissue PVE and brain
-mask, the white/grey-matter interface, and the bundle ROIs warped to the subject. MCAT then
+`GroupAFQ`. pyAFQ computes the derivatives MPAT needs: the fODF, the tissue PVE and brain
+mask, the white/grey-matter interface, and the bundle ROIs warped to the subject. MPAT then
 replaces the tracking and segmentation:
 
 ```python
 from AFQ.api.participant import ParticipantAFQ
-import mcat
+import mpat
 
 afq = ParticipantAFQ(dwi, bval, bvec, t1, output_dir)
-results = mcat.run(afq, n_proc=8, max_mem="16GB")     # -> <output_dir>/mcat/
+results = mpat.run(afq, n_proc=8, max_mem="16GB")     # -> <output_dir>/mpat/
 ```
 
-`mcat.run` returns `{bundle name: BundleResult}`, or one such dict per participant for a
+`mpat.run` returns `{bundle name: BundleResult}`, or one such dict per participant for a
 `GroupAFQ`, and writes the files described in {doc}`outputs`. The options are listed in
 {doc}`options`.
 
@@ -27,17 +27,17 @@ Any pyAFQ setting goes on the `ParticipantAFQ`, for example:
 - `segmentation_params={"dist_to_atlas": ...}`
 
 ```{note}
-MCAT uses pyAFQ's ROI-based bundle definitions: include, exclude, start and end ROIs, and
+MPAT uses pyAFQ's ROI-based bundle definitions: include, exclude, start and end ROIs, and
 whether a bundle may cross the midline. pyAFQ's streamline-based criteria (curvature, length,
 cleaning) have no counterpart in an expectation and are not applied.
 ```
 
 ## From the command line
 
-`mcat` runs pyAFQ and MCAT on one participant:
+`mpat` runs pyAFQ and MPAT on one participant:
 
 ```bash
-mcat sub-01_dwi.nii.gz sub-01_dwi.bval sub-01_dwi.bvec sub-01_T1w.nii.gz out/ --n-proc 8 --max-mem 16GB
+mpat sub-01_dwi.nii.gz sub-01_dwi.bval sub-01_dwi.bvec sub-01_T1w.nii.gz out/ --n-proc 8 --max-mem 16GB
 ```
 
 The T1w image must be registered to the DWI (it is pyAFQ's `t1_file`). If no `odf_model` is
@@ -50,7 +50,7 @@ JSON or as a Python expression that gives a dict. The expression can use:
 For example, an infant run:
 
 ```bash
-mcat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
+mpat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
     --afq-kwargs 'dict(reg_template_spec=afd.read_pediatric_templates()["UNCNeo-withCerebellum-for-babyAFQ"],
                        bundle_info=abd.baby_bd(), pve="babyseg", brain_mask_definition=BabyBrainMask())'
 ```
@@ -59,11 +59,11 @@ All flags are listed in {doc}`cli`.
 
 ## Lower level: your own volumes
 
-`mcat.run` is a thin layer over three calls that work on plain arrays. Use them to run MCAT
+`mpat.run` is a thin layer over three calls that work on plain arrays. Use them to run MPAT
 without pyAFQ, or on a phantom (as the figures in {doc}`algorithm` do):
 
 ```python
-from mcat import Chain, ChainConfig, prepare_launches, segment_bundles
+from mpat import Chain, ChainConfig, prepare_launches, segment_bundles
 
 chain = Chain.build(sh, zooms, transient, absorb_class, ChainConfig(angle=35, double_odf=True))
 launches = prepare_launches(chain, seeds)            # (S, 3) voxel indices

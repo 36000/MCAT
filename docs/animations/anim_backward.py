@@ -11,7 +11,7 @@ def make():
     from matplotlib.colors import Normalize
     from matplotlib.patches import Rectangle
 
-    from mcat.geometry import OFFSETS
+    from mpat.geometry import OFFSETS
 
     chain = P.build_chain()
     rois = P.arc_rois()

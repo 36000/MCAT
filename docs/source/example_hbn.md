@@ -1,14 +1,14 @@
 # Example: one HBN participant
 
-This example runs MCAT on real data: one participant of the Healthy Brain Network
+This example runs MPAT on real data: one participant of the Healthy Brain Network
 Processed Open Diffusion Derivatives (HBN-POD2) {cite}`alexander2017open,richiehalford2022analysis`.
 It follows pyAFQ's tutorial
 [Getting started with pyAFQ – ParticipantAFQ](https://tractometry.org/pyAFQ/examples/tutorial_examples/plot_002_participant_afq_api.html)
-up to the `ParticipantAFQ` object. From there, MCAT replaces tractography and bundle
+up to the `ParticipantAFQ` object. From there, MPAT replaces tractography and bundle
 recognition.
 
 The whole example is one script,
-[`examples/hbn_participant.py`](https://github.com/36000/MCAT/blob/main/examples/hbn_participant.py):
+[`examples/hbn_participant.py`](https://github.com/36000/MPAT/blob/main/examples/hbn_participant.py):
 
 ```bash
 pip install "pyAFQ[aws]"          # boto3, to download HBN-POD2 from its public S3 bucket
@@ -43,7 +43,7 @@ os.makedirs(output_dir, exist_ok=True)
 ## The pyAFQ participant
 
 As in the tutorial, the partial volume estimates (PVE) and the brain mask come from qsiprep.
-MCAT uses the PVE to decide where walkers move (white matter), where they end (grey matter),
+MPAT uses the PVE to decide where walkers move (white matter), where they end (grey matter),
 and where they never go (CSF). See {ref}`the tissue table <tissue-table>`.
 
 ```python
@@ -65,19 +65,19 @@ myafq = ParticipantAFQ(
 ```
 
 One difference from the tutorial: `tracking_params` only names the fODF model. pyAFQ's
-seeding options (`n_seeds`, `random_seeds`, `rng_seed`) do not apply, because MCAT does not
+seeding options (`n_seeds`, `random_seeds`, `rng_seed`) do not apply, because MPAT does not
 sample streamlines. It launches one streamline's worth of walker mass from **every** voxel of
 the white/grey-matter interface, and follows all of it exactly.
 
-## Running MCAT
+## Running MPAT
 
 ```python
-import mcat
+import mpat
 
-results = mcat.run(myafq, n_proc=8, max_mem="32GB")      # -> <output_dir>/mcat/
+results = mpat.run(myafq, n_proc=8, max_mem="32GB")      # -> <output_dir>/mpat/
 ```
 
-`mcat.run` asks pyAFQ for what it needs:
+`mpat.run` asks pyAFQ for what it needs:
 - the CSD fODF
 - the tissue PVE and the brain mask
 - the white/grey-matter interface, for the seeds
@@ -94,7 +94,7 @@ On this participant, with 8 threads:
 | chain | 1,737,034 states (voxels × 26 direction classes), 94.9 million transitions, 1.0 GB, built in 19 s |
 | seeds | 23,801 interface voxels → 62,569 half-walk pairs (one streamline per seed, split over its fODF peaks) |
 | solves | 36 bundles in two groups of columns (`max_mem="32GB"` fits up to 191 columns per group); each group is one backward and one forward series, 126–149 steps to the $10^{-10}$ tolerance, with no Krylov tail needed |
-| time | 17.6 minutes for MCAT. The first run also downloads the data and computes pyAFQ's derivatives (DTI and CSD fits, registration): about 30 minutes in all |
+| time | 17.6 minutes for MPAT. The first run also downloads the data and computes pyAFQ's derivatives (DTI and CSD fits, registration): about 30 minutes in all |
 
 Every bundle's `endpoint_mass_check` is 1 to within $10^{-5}$ (the largest deviation, $7.5 \times 10^{-6}$, is for the bundle with the fewest expected streamlines, Callosum Temporal).
 
@@ -102,7 +102,7 @@ Every bundle's `endpoint_mass_check` is 1 to within $10^{-5}$ (the largest devia
 
 ```{figure} ../static/examples/hbn_bundles.png
 :name: fig-hbn-bundles
-:alt: Six MCAT bundle densities, as sagittal and axial maximum-intensity projections over FA
+:alt: Six MPAT bundle densities, as sagittal and axial maximum-intensity projections over FA
 
 Six of the 36 bundles, as maximum-intensity projections of the density over FA, with each
 bundle's core in blue. Images are shown in RAS orientation: the subject's left is on the left
@@ -121,7 +121,7 @@ voxel, over FA.
 ```
 
 Each bundle's files are described in {doc}`outputs`. The run's table,
-`sub-NDARAA948VFH_ses-HBNsiteRU_acq-64dir_desc-mcat_table.tsv`, lists every bundle:
+`sub-NDARAA948VFH_ses-HBNsiteRU_acq-64dir_desc-mpat_table.tsv`, lists every bundle:
 
 Expected streamlines are counted out of the 23,801 seeds, one streamline per seed. Each count
 is the sum over seeds of the probability that the seed's streamline meets the bundle's
@@ -172,16 +172,16 @@ fasciculus to 0.002 for the callosal temporal bundle.
 
 ## Looking at the bundles interactively
 
-In a notebook, `mcat.view` shows the densities, cores and visitation-ODF glyphs in NiiVue:
+In a notebook, `mpat.view` shows the densities, cores and visitation-ODF glyphs in NiiVue:
 
 ```python
-mcat.view(op.join(output_dir, "mcat"), bundles=["LeftArcuate", "LeftCorticospinal"], glyphs=True)
+mpat.view(op.join(output_dir, "mpat"), bundles=["LeftArcuate", "LeftCorticospinal"], glyphs=True)
 ```
 
-and `mcat.save_html` writes the same scene as one web page:
+and `mpat.save_html` writes the same scene as one web page:
 
 ```python
-mcat.save_html("hbn_bundles.html", op.join(output_dir, "mcat"),
+mpat.save_html("hbn_bundles.html", op.join(output_dir, "mpat"),
                       bundles=["LeftArcuate", "LeftCorticospinal"], glyphs=True)
 ```
 

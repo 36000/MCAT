@@ -2,15 +2,15 @@
 
 In a notebook (JupyterLab, Notebook 7, VS Code, Voila)::
 
-    from mcat import view
-    view("derivatives/afq/sub-01/mcat", t1="sub-01_desc-masked_T1w.nii.gz",
+    from mpat import view
+    view("derivatives/afq/sub-01/mpat", t1="sub-01_desc-masked_T1w.nii.gz",
          bundles=["LeftArcuate", "LeftCorticospinal"])
 
-or as a web page to open in any browser or share: ``mcat.viewer.save_html("bundles.html",
+or as a web page to open in any browser or share: ``mpat.viewer.save_html("bundles.html",
 folder, ...)`` with the same options.
 
 Each bundle's density is shown on a log scale, from ``floor`` x its peak (faint) to its peak
-(bright), with its own colour map; its core (written by ``mcat.run``, computed here if
+(bright), with its own colour map; its core (written by ``mpat.run``, computed here if
 missing) is drawn as a tube in the matching colour.  ``glyphs=True`` adds the bundles'
 visitation ODFs -- the directions their walkers travel in each voxel, drawn like fODF
 glyphs -- on three planes through each core's midpoint.  Slices and 3-D render are both
@@ -29,7 +29,7 @@ import numpy as np
 
 from .core import bundle_core, bundle_files, write_core
 
-log = logging.getLogger("mcat")
+log = logging.getLogger("mpat")
 
 # (NiiVue colour map for the density, matching RGBA for the core tube)
 PALETTE = [("warm", (255, 196, 40)), ("cool", (60, 230, 255)), ("green", (80, 255, 100)),
@@ -45,7 +45,7 @@ def _nifti_bytes(arr, affine, dtype=np.uint8):
 
 
 DENSITY_RANGE = 1e-6   # density maps are encoded down to this x the peak (the slider's range)
-GLYPH_RANGE = 1e-3     # glyph voxels are kept down to this x the peak (mcat.afq.ODF_FLOOR)
+GLYPH_RANGE = 1e-3     # glyph voxels are kept down to this x the peak (mpat.afq.ODF_FLOOR)
 
 
 def _u8_level(frac, enc_floor):
@@ -104,7 +104,7 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
     and the 2-D mesh slab.
 
     bundles          names to show (default: all)
-    t1               background image (default: the run's ``*_desc-mcat_dseg``)
+    t1               background image (default: the run's ``*_desc-mpat_dseg``)
     floor            faintest density shown, as a fraction of each bundle's peak
     show_density     overlay the density maps (False: cores only, on the background)
     density_opacity  of the density over the background (1: opaque; below ``floor`` the
@@ -133,7 +133,7 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
                      grey glyphs at the same voxels, a little smaller, for comparison
     write_missing_cores  compute cores that are not on disk yet and save them next to the maps
     rois             show each bundle's include ROIs (green) and exclude ROIs (red) as surfaces,
-                     from the ``_desc-include_mask`` / ``_desc-exclude_mask`` files mcat.run writes
+                     from the ``_desc-include_mask`` / ``_desc-exclude_mask`` files mpat.run writes
     roi_opacity      of those surfaces (1: opaque)
     """
     import json
@@ -148,7 +148,7 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
         raise ValueError(f"no *_bundle-*_desc-density_map.nii.gz under {folder}")
     if t1 is None:  # the run's tissue labels (0 outside, 1 WM, 2-4 GM / CSF / edge)
         cand = sorted(glob.glob(op.join(folder, "**", "*_dseg.nii.gz"), recursive=True),
-                      key=lambda x: "_desc-mcat_dseg" not in x)
+                      key=lambda x: "_desc-mpat_dseg" not in x)
         t1 = cand[0] if cand else None
     S = dict(volumes=[], meshes=[], glyphs=[], bundles=[], focus=None, slab=None, isosurface=bool(isosurface),
              subject=op.basename(next(iter(files.values()))["prefix"]).split("_bundle-")[0])
@@ -219,8 +219,8 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
                                             rgba255=[*rgb_roi, 255], opacity=roi_opacity,
                                             data=isosurface_mz3(m.astype(np.float32), 0.5, A, rgb_roi)))
             if not (f.get("include") or f.get("exclude")):
-                log.warning("%s: no include / exclude masks on disk (written by mcat.run since 2026-11-06)", name)
-        # core: written by mcat.run; computed here if missing
+                log.warning("%s: no include / exclude masks on disk (written by mpat.run since 2026-11-06)", name)
+        # core: written by mpat.run; computed here if missing
         tck, xyz = f["prefix"] + "_desc-core.tck", None
         if op.exists(tck):
             xyz = nib.streamlines.load(tck).streamlines[0]
@@ -243,7 +243,7 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
         if name not in names or d.max() <= 0:      # empty bundles: no glyphs
             continue
         if f["odf"] is None:
-            log.warning("%s: no visitation ODF on disk (written by mcat.run since 2026-11-04)", name)
+            log.warning("%s: no visitation ODF on disk (written by mpat.run since 2026-11-04)", name)
             continue
         static = isinstance(glyph_planes, str) and glyph_planes == "all"
         keep = glyph_floor if static else min(glyph_floor, glyph_range)
@@ -293,7 +293,7 @@ def scene(folder, bundles=None, t1=None, floor=1e-3, show_density=True, density_
 
 
 def view(folder, height=640, **kwargs):
-    """ipyniivue ``NiiVue`` widget with the MCAT bundles under ``folder``: the three slices
+    """ipyniivue ``NiiVue`` widget with the MPAT bundles under ``folder``: the three slices
     and a 3-D render in an equal 2 x 2 grid, cropped to the content and opaque throughout
     (the 3-D view: each bundle as a surface in a lit head cut open towards the camera).
     Double-click a view to enlarge it to the whole widget; double-click again for the grid.  ``kwargs``: ``scene``'s options (bundles, t1, floor, glyphs, fodf, ...),
@@ -425,13 +425,13 @@ def save_html(path, folder, title=None, niivue_js=None, **kwargs):
         for g in S["glyphs"]:
             g["K"] = int(g["coef"].shape[1])
             g["ijk"], g["coef"], g["rel"] = b64(g["ijk"], "<i4"), b64(g["coef"], "<f4"), b64(g["rel"], "<f4")
-    title = title or f"MCAT \u00b7 {S['subject']}"
+    title = title or f"MPAT \u00b7 {S['subject']}"
     if niivue_js is None:
         lib = f'<script src="{NIIVUE_CDN}"></script>'
     else:
         with open(niivue_js) as fh:
             lib = "<script>" + fh.read().replace("</script", "<\\/script") + "</script>"
-    page = (resources("mcat") / "viewer.html").read_text()
+    page = (resources("mpat") / "viewer.html").read_text()
     page = (page.replace("__TITLE__", title.replace("<", "&lt;")).replace("__NIIVUE__", lib)
             .replace("__DATA__", json.dumps(S).replace("</", "<\\/")))
     with open(path, "w") as fh:
@@ -465,7 +465,7 @@ def glyph_mesh(g, affine, c=None, floor=None):
 def glyph_mz3(coef, ijk, affine, rgb=None, norm=True, scale=1.0, sphere="symmetric362", vmax=None):
     """Gzipped MZ3 surface (NiiVue's native mesh format) of ODF glyphs, one per voxel.
 
-    coef (n, ncoef) SH coefficients (DIPY descoteaux07, as pyAFQ's fODFs and MCAT's visitation
+    coef (n, ncoef) SH coefficients (DIPY descoteaux07, as pyAFQ's fODFs and MPAT's visitation
     ODFs); ijk (n, 3) voxel indices; affine voxel -> world (mm).  Radii are the ODF clipped
     at 0, scaled to each glyph's maximum (norm) or to the largest of all (or vmax), which reaches
     ``scale`` x half the smallest voxel side.  Colour: rgb, or by direction (|x|, |y|, |z|)."""

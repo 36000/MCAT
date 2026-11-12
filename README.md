@@ -1,10 +1,10 @@
-# MCAT: Markov chain absorbing tractography
+# MPAT: Markov probabilistic absorbing tractography
 
-[![docs](https://github.com/36000/MCAT/actions/workflows/docs.yml/badge.svg)](https://36000.github.io/MCAT/)
+[![docs](https://github.com/36000/MPAT/actions/workflows/docs.yml/badge.svg)](https://36000.github.io/MPAT/)
 
-**Documentation:** <https://36000.github.io/MCAT/>, including [how the method works](https://36000.github.io/MCAT/algorithm.html), with animations.
+**Documentation:** <https://36000.github.io/MPAT/>, including [how the method works](https://36000.github.io/MPAT/algorithm.html), with animations.
 
-MCAT computes white-matter bundles as exact expectations over infinitely many streamlines, with no sampling.
+MPAT computes white-matter bundles as exact expectations over infinitely many streamlines, with no sampling.
 
 - **The chain.** Probabilistic tracking is treated as an absorbing Markov chain on (white-matter voxel, direction) states. The transitions are the analytic hop geometry of [MITTENS](https://github.com/mattcieslak/MITTENS), with the walker's incoming direction remembered between voxels.
 - **Bundle selection.** Include, exclude and endpoint ROIs are applied with forward and backward passes over that chain. This is transition path theory's reactive density, with inclusion–exclusion for the include ROIs.
@@ -12,31 +12,31 @@ MCAT computes white-matter bundles as exact expectations over infinitely many st
 
 ```python
 from AFQ.api.participant import ParticipantAFQ      # or GroupAFQ: every participant in turn
-import mcat
+import mpat
 
 afq = ParticipantAFQ(dwi, bval, bvec, t1, output_dir)
-mcat.run(afq, n_proc=8, max_mem="16GB")              # -> <output_dir>/mcat/
-mcat.view(f"{output_dir}/mcat", t1=t1_masked, bundles=["LeftArcuate", "LeftCorticospinal"], glyphs=True)
+mpat.run(afq, n_proc=8, max_mem="16GB")              # -> <output_dir>/mpat/
+mpat.view(f"{output_dir}/mpat", t1=t1_masked, bundles=["LeftArcuate", "LeftCorticospinal"], glyphs=True)
 ```
 
-The command line runs pyAFQ and MCAT on one participant:
+The command line runs pyAFQ and MPAT on one participant:
 
 ```bash
-mcat sub-01_dwi.nii.gz sub-01_dwi.bval sub-01_dwi.bvec sub-01_T1w.nii.gz out/ --n-proc 8 --max-mem 16GB
+mpat sub-01_dwi.nii.gz sub-01_dwi.bval sub-01_dwi.bvec sub-01_T1w.nii.gz out/ --n-proc 8 --max-mem 16GB
 ```
 
 ## Install
 
 ```bash
 pip install maturin                                   # MITTENS v2 builds with Rust (https://rustup.rs)
-pip install "mcat-tractography[viewer] @ git+<this repository>"
+pip install "mpat-tractography[viewer] @ git+<this repository>"
 ```
 
 MITTENS v2 (`mittens-dmri`) is not on PyPI yet, so pip builds it from GitHub with your Rust toolchain.
 
 ## Options
 
-| `mcat.run(...)` | CLI | default | |
+| `mpat.run(...)` | CLI | default | |
 |---|---|---|---|
 | `n_proc` | `--n-proc` | required | threads |
 | `max_mem` | `--max-mem` | required | memory budget. Bundles are packed into groups that share every pass over the transition matrix; the budget sets how many fit. |
@@ -50,14 +50,14 @@ MITTENS v2 (`mittens-dmri`) is not on PyPI yet, so pip builds it from GitHub wit
 Any pyAFQ setting goes on the `ParticipantAFQ`; with the CLI, pass it as `--afq-kwargs`. That covers the fODF model (`tracking_params={"odf_model": ...}`), the PVE, custom bundle dictionaries including subject-space ROIs, and `segmentation_params={"dist_to_atlas": ...}`. `--afq-kwargs` takes JSON, or a Python expression that gives a dict, for settings that are Python objects. The expression sees `afd` (`AFQ.data.fetch`), `abd` (`AFQ.api.bundle_dict`), the `AFQ.definitions` image and mapping classes, `np` and `nib`. For example, an infant run:
 
 ```bash
-mcat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
+mpat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
     --afq-kwargs 'dict(reg_template_spec=afd.read_pediatric_templates()["UNCNeo-withCerebellum-for-babyAFQ"],
                        bundle_info=abd.baby_bd(), pve="babyseg", brain_mask_definition=BabyBrainMask())'
 ```
 
 **Solves that crawl** switch to a Krylov solver automatically, with no setting. A normal bundle loses about 10% of its walker mass per step, so 1e-10 takes 300–500 steps and Krylov never triggers. When nearly everything is walkable (ie, all-WM), walkers circle for thousands of steps. Once power iteration would need 500 or more further steps, or stalls, the rest of the series is solved with BiCGSTAB.
 
-## Outputs (`<output_dir>/mcat/`, or `mcat-moments/`)
+## Outputs (`<output_dir>/mpat/`, or `mpat-moments/`)
 
 | file | |
 |---|---|
@@ -68,13 +68,13 @@ mcat dwi.nii.gz dwi.bval dwi.bvec T2w.nii.gz out/ --n-proc 12 --max-mem 16GB \
 | `..._desc-start_mask`, `_desc-end_mask` | the endpoint ROIs used (pyAFQ's `dist_to_atlas` applied) |
 | `..._desc-core_path.tsv`, `_desc-core.tck` | the bundle's core: the cross-section ridge path, 100 nodes |
 | `..._desc-summary.json` | settings, solve diagnostics, mass check |
-| `<sub>_desc-mcat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
-| `<sub>_desc-mcat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
-| `<sub>_desc-mcat_collage.png` | every bundle's density as sagittal, coronal and axial maximum-intensity projections, log scale (`viz`) |
-| `<sub>_desc-mcat_view.html` | viewer page with every bundle: densities and cores (`viz`) |
+| `<sub>_desc-mpat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
+| `<sub>_desc-mpat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
+| `<sub>_desc-mpat_collage.png` | every bundle's density as sagittal, coronal and axial maximum-intensity projections, log scale (`viz`) |
+| `<sub>_desc-mpat_view.html` | viewer page with every bundle: densities and cores (`viz`) |
 | `..._bundle-<Name>_desc-view.html` | viewer page for one bundle, with its visitation-ODF glyphs and the fODF (`viz`) |
 
-`mcat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget. It shows the three slices and a 3-D render as an equal 2 × 2 grid, each bundle's density on a log scale from 1e-3 of its peak, and its core as a tube. Every volume is cropped to the head and the bundles, so the views fill their space, and nothing is transparent: the density is opaque over the background, and the 3-D view shows each bundle as an opaque surface (`isosurface`, on by default) inside a lit head cut open towards the camera. Double-click a view to enlarge it to the whole widget, and double-click again for all four (on the web page, Esc works too).
+`mpat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget. It shows the three slices and a 3-D render as an equal 2 × 2 grid, each bundle's density on a log scale from 1e-3 of its peak, and its core as a tube. Every volume is cropped to the head and the bundles, so the views fill their space, and nothing is transparent: the density is opaque over the background, and the 3-D view shows each bundle as an opaque surface (`isosurface`, on by default) inside a lit head cut open towards the camera. Double-click a view to enlarge it to the whole widget, and double-click again for all four (on the web page, Esc works too).
 
 With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs as glyphs, like fODF glyphs. Where the fODF has a crossing, the glyph shows only the lobe the bundle uses. Glyphs follow the slices: every voxel at or above `glyph_floor` (1e-2 of the peak) gets one, drawn on the three slices through the crosshair, and redrawn as you click or scroll. The slices start at the core's midpoint. Options:
 
@@ -83,7 +83,7 @@ With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs
 - `glyph_norm=False` sizes glyphs by visits instead of normalising each one.
 - `glyph_color` is `"direction"` or `"bundle"`.
 
-`mcat.viewer.save_html("bundles.html", folder, glyphs=True, ...)` writes the same scene as a standalone web page to open in any browser or share. It has controls for the layout, each bundle's density, core and glyphs, the opacities, and whether scrolling moves slices or zooms. Two log-scale sliders set the faintest density shown (down to 1e-6 of each bundle's peak) and the faintest voxel that gets a glyph (down to 1e-3). A checkbox (on by default) draws each bundle as an opaque surface at the density slider's level, redrawn as the slider moves; the notebook widget draws it at `floor`. The data are embedded and the page meshes the glyphs itself. NiiVue loads from a CDN; pass `niivue_js=` a local `niivue.umd.js` (npm `@niivue/niivue`, `dist/`) to embed it and work offline.
+`mpat.viewer.save_html("bundles.html", folder, glyphs=True, ...)` writes the same scene as a standalone web page to open in any browser or share. It has controls for the layout, each bundle's density, core and glyphs, the opacities, and whether scrolling moves slices or zooms. Two log-scale sliders set the faintest density shown (down to 1e-6 of each bundle's peak) and the faintest voxel that gets a glyph (down to 1e-3). A checkbox (on by default) draws each bundle as an opaque surface at the density slider's level, redrawn as the slider moves; the notebook widget draws it at `floor`. The data are embedded and the page meshes the glyphs itself. NiiVue loads from a CDN; pass `niivue_js=` a local `niivue.umd.js` (npm `@niivue/niivue`, `dist/`) to embed it and work offline.
 
 ## Method
 
@@ -91,7 +91,7 @@ With `glyphs=True` (or a list of bundle names) it also draws the visitation ODFs
 - **Geometry (MITTENS v2).**
   - A hop is one voxel long (of the smallest voxel side) and turns less than `angle`.
   - MITTENS enumerates every hop sequence inside a voxel, with the exact volume of start points, on DSI Studio's 642-direction sphere. Anisotropic voxels are exact.
-  - MCAT adds each path's last direction class (the walker's memory) and its box of start points (for moments).
+  - MPAT adds each path's last direction class (the walker's memory) and its box of start points (for moments).
 - **Transitions.**
   - A state is (voxel, one of 26 direction classes). Its transitions are sums over MITTENS paths of the fODF's turning probabilities times the doubleODF look-ahead, conditioned on the incoming direction.
   - Each transition is stored as a 1-byte slot into its class's template of (neighbour, class) pairs, plus a float64 weight. One copy serves forward (scatter) and backward (gather) steps.

@@ -33,7 +33,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install MCAT with the test extra
+      - name: Install MPAT with the test extra
         run: |
           python -m pip install --upgrade pip maturin
           python -m pip install -e ".[test]"

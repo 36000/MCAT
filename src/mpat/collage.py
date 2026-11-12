@@ -3,7 +3,7 @@
 with left / right partners sharing a panel where they do not overlap (axial and coronal
 views).  Each panel is the maximum-intensity projection of the density (log scale, each bundle
 divided by its own peak) over a T1 slice through the bundle; every panel has the same mm scale.
-Written by ``mcat.run``."""
+Written by ``mpat.run``."""
 from __future__ import annotations
 
 import glob
@@ -100,7 +100,7 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
                   views=None, pair=True, groups=GROUPS, mask=True, fontsize=13, brain_mask=None, titles=None):
     """PNG collage of the bundles under ``folder`` (default: all); returns its path.
 
-    out      default: <folder>/<subject>_desc-mcat_collage.png
+    out      default: <folder>/<subject>_desc-mpat_collage.png
     floor    faintest density shown, as a fraction of each bundle's peak
     t1       background: a T1 slice through each panel's bundle(s), at the density-weighted
              centre along the projection (default: pyAFQ's masked T1 next to the run; without
@@ -151,7 +151,7 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
     from scipy import ndimage as ndi
 
     up = op.dirname(op.abspath(folder).rstrip("/"))
-    dseg = sorted(glob.glob(op.join(folder, "**", "*_desc-mcat_dseg.nii.gz"), recursive=True))
+    dseg = sorted(glob.glob(op.join(folder, "**", "*_desc-mpat_dseg.nii.gz"), recursive=True))
     bmask = sorted(glob.glob(op.join(folder, "*_desc-brain_mask.nii.gz")) + glob.glob(op.join(up, "*_desc-brain_mask.nii.gz")))
     src = brain_mask or (bmask[0] if bmask else dseg[0] if dseg else None)
     brain = on_ref(src) > 0 if src is not None else None
@@ -344,7 +344,7 @@ def write_collage(folder, out=None, bundles=None, floor=1e-3, cols=4, pad=0, til
              linespacing=1.15)
     if out is None:
         subject = op.basename(files[names[0]]["prefix"]).split("_bundle-")[0]
-        out = op.join(folder, f"{subject}_desc-mcat_collage.png")
+        out = op.join(folder, f"{subject}_desc-mpat_collage.png")
     fig.savefig(out, dpi=dpi, facecolor="black")
     plt.close(fig)
     return out

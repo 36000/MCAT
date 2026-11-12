@@ -1,4 +1,4 @@
-"""Hops inside one voxel: MITTENS's exact start-point volumes, from mcat.geometry.build_geometry."""
+"""Hops inside one voxel: MITTENS's exact start-point volumes, from mpat.geometry.build_geometry."""
 import numpy as np
 
 import phantom as P
@@ -8,7 +8,7 @@ def make():
     import matplotlib.pyplot as plt
     from matplotlib.patches import FancyArrowPatch, Rectangle
 
-    from mcat.geometry import OFFSETS, build_geometry
+    from mpat.geometry import OFFSETS, build_geometry
 
     g = build_geometry((P.ZOOM,) * 3, 35.0)
     V = g.vertices

@@ -1,4 +1,4 @@
-"""Minimal end-to-end checks of MCAT on a small synthetic volume.
+"""Minimal end-to-end checks of MPAT on a small synthetic volume.
 
 The volume is a slab of white matter, one voxel thick, between two strips of grey matter
 (left and right) and sandwiched between slices of CSF, which walkers never enter: every walk
@@ -17,7 +17,7 @@ Z = 1
 
 @pytest.fixture(scope="module")
 def geo():
-    from mcat.geometry import build_geometry
+    from mpat.geometry import build_geometry
 
     return build_geometry((2.0, 2.0, 2.0), 35.0)
 
@@ -64,7 +64,7 @@ def _iso(vertices):
 
 @pytest.fixture(scope="module")
 def chain(slab):
-    from mcat import Chain, ChainConfig
+    from mpat import Chain, ChainConfig
 
     sh, transient, absorb, _, _ = slab
     return Chain.build(sh, (2.0, 2.0, 2.0), transient, absorb, ChainConfig(angle=35.0))
@@ -72,7 +72,7 @@ def chain(slab):
 
 @pytest.fixture(scope="module")
 def result(chain, slab):
-    from mcat import prepare_launches, segment_bundles
+    from mpat import prepare_launches, segment_bundles
 
     _, transient, _, left, right = slab
     seeds = np.argwhere(transient)
@@ -114,7 +114,7 @@ def test_bundle(result, chain):
 
 
 def test_core(result, chain, slab):
-    from mcat import bundle_core
+    from mpat import bundle_core
 
     res, _ = result
     _, _, _, left, right = slab
@@ -127,7 +127,7 @@ def test_core(result, chain, slab):
 
 
 def test_tissue_labels():
-    from mcat.afq import tissue_labels
+    from mpat.afq import tissue_labels
 
     shape = (8, 8, 8)
     sh = np.zeros(shape + (45,), np.float32)
@@ -146,7 +146,7 @@ def test_tissue_labels():
 
 
 def test_cli_afq_kwargs():
-    from mcat.cli import afq_kwargs
+    from mpat.cli import afq_kwargs
 
     assert afq_kwargs(json.dumps({"pve": "synthseg"})) == {"pve": "synthseg"}
     assert afq_kwargs("dict(a=1)") == {"a": 1}

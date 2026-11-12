@@ -84,5 +84,5 @@ site/
 .DS_Store
 Thumbs.db
 
-# MCAT run outputs, if you run it inside the repo
+# MPAT run outputs, if you run it inside the repo
 *_desc-chain_cache.npz

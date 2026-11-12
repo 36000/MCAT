@@ -1,4 +1,4 @@
-"""A bundle's core (mcat.core.bundle_core), stage by stage: anchors, the most-probable path,
+"""A bundle's core (mpat.core.bundle_core), stage by stage: anchors, the most-probable path,
 cross-sections, and the ridge path."""
 import numpy as np
 
@@ -6,11 +6,11 @@ import phantom as P
 
 
 def _stages(density, endpoints, start, end, affine):
-    """The intermediate results of mcat.core.bundle_core (same steps, kept for drawing)."""
+    """The intermediate results of mpat.core.bundle_core (same steps, kept for drawing)."""
     from scipy.ndimage import label
     from scipy.sparse.csgraph import dijkstra
 
-    from mcat.core import _anchor, _graph, _path, split_ends
+    from mpat.core import _anchor, _graph, _path, split_ends
 
     d = np.clip(density, 0, None)
     ep = np.clip(endpoints, 0, None)
@@ -47,7 +47,7 @@ def make():
     import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm
 
-    from mcat import bundle_core
+    from mpat import bundle_core
 
     chain = P.build_chain()
     spec = P.arc_spec(include=False, exclude=False)

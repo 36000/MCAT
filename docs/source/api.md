@@ -1,70 +1,70 @@
 # Python API
 
-## Running MCAT
+## Running MPAT
 
 ```{eval-rst}
-.. autofunction:: mcat.run
+.. autofunction:: mpat.run
 
-.. autofunction:: mcat.view
+.. autofunction:: mpat.view
 
-.. autofunction:: mcat.save_html
+.. autofunction:: mpat.save_html
 ```
 
 ## The chain and the solves
 
 ```{eval-rst}
-.. autoclass:: mcat.ChainConfig
+.. autoclass:: mpat.ChainConfig
    :members:
 
-.. autoclass:: mcat.Chain
+.. autoclass:: mpat.Chain
    :members: build, lin, seed_peaks, mul_forward, mul_backward, absorb_rhs, absorbed_from, to_volume
 
-.. autofunction:: mcat.prepare_launches
+.. autofunction:: mpat.prepare_launches
 
-.. autofunction:: mcat.segment_bundles
+.. autofunction:: mpat.segment_bundles
 
-.. autoclass:: mcat.solve.BundleResult
+.. autoclass:: mpat.solve.BundleResult
 
-.. autoclass:: mcat.solve.Launches
+.. autoclass:: mpat.solve.Launches
 
-.. autofunction:: mcat.solve.solve_series
+.. autofunction:: mpat.solve.solve_series
 
-.. autofunction:: mcat.solve.bicgstab
+.. autofunction:: mpat.solve.bicgstab
 ```
 
 ## Geometry
 
 ```{eval-rst}
-.. autofunction:: mcat.geometry.build_geometry
+.. autofunction:: mpat.geometry.build_geometry
 
-.. autofunction:: mcat.geometry.pmf_and_cone_mass
+.. autofunction:: mpat.geometry.pmf_and_cone_mass
 
-.. autofunction:: mcat.geometry.visitation_odf
+.. autofunction:: mpat.geometry.visitation_odf
 ```
 
 ## Cores
 
 ```{eval-rst}
-.. autofunction:: mcat.bundle_core
+.. autofunction:: mpat.bundle_core
 
-.. autofunction:: mcat.core.write_cores
+.. autofunction:: mpat.core.write_cores
 ```
 
 ## pyAFQ integration
 
 ```{eval-rst}
-.. autofunction:: mcat.afq.tissue_labels
+.. autofunction:: mpat.afq.tissue_labels
 
-.. autofunction:: mcat.afq.bundle_specs
+.. autofunction:: mpat.afq.bundle_specs
 
-.. autofunction:: mcat.afq.seal_26
+.. autofunction:: mpat.afq.seal_26
 ```
 
 ## Spatial moments
 
 ```{eval-rst}
-.. automodule:: mcat.moments
+.. automodule:: mpat.moments
    :no-members:
 
-.. autofunction:: mcat.moments.stabilize
+.. autofunction:: mpat.moments.stabilize
 ```

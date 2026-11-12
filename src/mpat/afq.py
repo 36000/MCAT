@@ -1,8 +1,8 @@
-"""MCAT on top of pyAFQ.  Everything except the Markov chain comes from a pyAFQ
+"""MPAT on top of pyAFQ.  Everything except the Markov chain comes from a pyAFQ
 ``ParticipantAFQ`` (or each participant of a ``GroupAFQ``): the fODF pyAFQ tracks on, the
 tissue PVE and brain mask, the white/grey-matter interface (seeds), the bundle
-definitions, and their ROIs warped to the subject.  Outputs go to ``<output_dir>/mcat``
-(``mcat-moments`` with spatial moments), next to pyAFQ's own, or to ``out_dir`` (pyAFQ's
+definitions, and their ROIs warped to the subject.  Outputs go to ``<output_dir>/mpat``
+(``mpat-moments`` with spatial moments), next to pyAFQ's own, or to ``out_dir`` (pyAFQ's
 derivatives are then only read).
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from .chain import ABSORB_CLASSES, Chain, ChainConfig
 from .geometry import visitation_odf
 from .solve import Clock, overlength_states, prepare_launches, segment_bundles
 
-log = logging.getLogger("mcat")
+log = logging.getLogger("mpat")
 WM_THRESHOLD = 0.4   # pyAFQ's tracker stops where WM PVE <= gm_threshold (0.4)
 ODF_FLOOR = 1e-3     # visitation ODFs are written where the density reaches this x its peak
 
@@ -159,7 +159,7 @@ def mni_box(box, bd, mapping, ref_img):
 
 def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_midline=(), midline_tol=None,
                       fornix=True, hypo_file=None, parc_file=None):
-    """MCAT bundle specs from pyAFQ's bundle dictionary and MCAT's rules (mcat.bundles): include /
+    """MPAT bundle specs from pyAFQ's bundle dictionary and MPAT's rules (mpat.bundles): include /
     exclude ROIs (sealed), start / end ROIs grown by pyAFQ's ``dist_to_atlas``, and the other
     hemisphere excluded for bundles that may not cross the midline.  Other pyAFQ criteria
     (curvature, length, cleaning) are streamline-based and do not apply.  Yields one bundle at
@@ -169,7 +169,7 @@ def bundle_specs_iter(afq, ref_img, transient, names=None, thalamus=None, no_mid
     no_midline  bundle names whose cross_midline=False is ignored (no other-hemisphere exclusion)
     midline_tol overrides the midline_tol rule of the bundles that have one (the corticospinal
                 tracts); None: the rules' own
-    fornix      False: drop the fornix box (mcat.bundles.FORNIX_BOX_MNI) from the exclusions
+    fornix      False: drop the fornix box (mpat.bundles.FORNIX_BOX_MNI) from the exclusions
                 (the anterior thalamic radiations as pyAFQ defines them)
     parc_file   where SynthSeg with its cortical parcels and hypothalamus is kept (written on
                 first need), when a bundle's SynthSeg ROIs use cortical parcels (or the
@@ -342,13 +342,13 @@ def synthseg_parcellated(afq, path=None):
 
 def synthseg_cst_for_pyafq(afq, bd, moments=False, out_dir=None):
     """``bd`` (already pyafq_bd'd) with pyAFQ's own versions of the SynthSeg corticospinal tracts
-    (mcat.bundles.synthseg_cst_bd): their start / end masks from SynthSeg's parcellation
-    (synthseg_parcellated: run if it is not there yet) written on the DWI grid in MCAT's
+    (mpat.bundles.synthseg_cst_bd): their start / end masks from SynthSeg's parcellation
+    (synthseg_parcellated: run if it is not there yet) written on the DWI grid in MPAT's
     folder, as subject-space ROIs pyAFQ's recognition reads (endpoints only, exact_endpoints: not
-    grown by dist_to_atlas, as MCAT's synthseg_tol_mm 0)."""
+    grown by dist_to_atlas, as MPAT's synthseg_tol_mm 0)."""
     from .bundles import synthseg_cst_labels, synthseg_values
 
-    out = mcat_dir(afq, moments, out_dir)
+    out = mpat_dir(afq, moments, out_dir)
     out.mkdir(parents=True, exist_ok=True)
     stem = str(out / Path(afq.kwargs["base_fname"]).name)
     seg = synthseg_parcellated(afq, parc_file_of(stem))
@@ -360,7 +360,7 @@ def synthseg_cst_for_pyafq(afq, bd, moments=False, out_dir=None):
     bd.resample_subject_to = ref
     for side in ("Left", "Right"):
         name = f"{side} Corticospinal"
-        entry = dict(cross_midline=False, space="subject", exact_endpoints=True)   # no 4 mm growth, as in MCAT
+        entry = dict(cross_midline=False, space="subject", exact_endpoints=True)   # no 4 mm growth, as in MPAT
         for k, labels in zip(("start", "end"), synthseg_cst_labels(side)):
             f = f"{stem}_bundle-{side}Corticospinal_desc-synthseg{k}pyafq_mask.nii.gz"
             m = np.isin(lab, synthseg_values(labels)).astype(np.uint8)
@@ -427,7 +427,7 @@ def write_rois(afq, bundles=None, moments=False, synthseg_thalamus=True, no_midl
 
     sh_img = nib.load(afq.export(f"{afq.export('tracking_params')['odf_model'].lower()}_params"))
     transient, _, _ = tissue_labels(sh_img, nib.load(afq.export("pve_internal")), nib.load(afq.export("brain_mask")))
-    out = mcat_dir(afq, moments, out_dir)
+    out = mpat_dir(afq, moments, out_dir)
     stem = str(out / Path(afq.kwargs["base_fname"]).name)
     done = bundle_files(out)
     names = list(bundles or afq.export("bundle_dict"))
@@ -440,7 +440,7 @@ def write_rois(afq, bundles=None, moments=False, synthseg_thalamus=True, no_midl
         log.info("%s: ROI masks written", spec["name"])
     if not page or not run_names:
         return None
-    return save_html(f"{stem}_desc-mcat_rois.html", str(out),
+    return save_html(f"{stem}_desc-mpat_rois.html", str(out),
                      bundles=[re.sub(r"[^A-Za-z0-9]", "", n) for n in run_names], rois=True)
 
 
@@ -453,8 +453,8 @@ def visualize(out, stem, bundles, fodf=None, t1=None, rois=False):
     from .core import bundle_files
     from .viewer import save_html
 
-    jobs = [("collage", lambda: write_collage(out, f"{stem}_desc-mcat_collage.png", bundles, t1=t1)),
-            ("viewer", lambda: save_html(f"{stem}_desc-mcat_view.html", out, bundles=bundles, rois=rois))]
+    jobs = [("collage", lambda: write_collage(out, f"{stem}_desc-mpat_collage.png", bundles, t1=t1)),
+            ("viewer", lambda: save_html(f"{stem}_desc-mpat_view.html", out, bundles=bundles, rois=rois))]
     files = bundle_files(out)
     for b in bundles:
         if b in files:   # glyphs from 1e-2 of the peak (the slider can raise it); keeps pages small
@@ -468,11 +468,11 @@ def visualize(out, stem, bundles, fodf=None, t1=None, rois=False):
             log.warning("%s not written: %s", what, err)
 
 
-def mcat_dir(afq, moments=False, out_dir=None):
-    """Where MCAT's outputs go: ``out_dir`` if given, else <pyAFQ output_dir>/mcat (mcat-moments)."""
+def mpat_dir(afq, moments=False, out_dir=None):
+    """Where MPAT's outputs go: ``out_dir`` if given, else <pyAFQ output_dir>/mpat (mpat-moments)."""
     if out_dir:
         return Path(out_dir)
-    return Path(afq.kwargs["output_dir"]) / ("mcat-moments" if moments else "mcat")
+    return Path(afq.kwargs["output_dir"]) / ("mpat-moments" if moments else "mpat")
 
 
 GiB = 1024 ** 3
@@ -543,7 +543,7 @@ def _budget(max_mem, chain, launches):
             raise ValueError("max_mem='auto': cannot tell this machine's memory limit; give a size")
         total = max(min(AUTO_FRACTION * limit, limit - AUTO_HEADROOM), 0.5 * limit)
         budget = total - other
-        log.info("memory: limit %.1f GB (%s), MCAT may use %.1f GB; %.1f GB already held besides the chain "
+        log.info("memory: limit %.1f GB (%s), MPAT may use %.1f GB; %.1f GB already held besides the chain "
                  "(%.1f GB) and launches (%.1f GB) -> %.1f GB budget", limit / GiB, src, total / GiB,
                  other / GiB, chain.nbytes / GiB, launches.nbytes / GiB, budget / GiB)
         return budget
@@ -566,7 +566,7 @@ def _bytes(x):
 def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angle=35.0, double_odf=True,
         cores=True, viz=True, synthseg_thalamus=True, max_length=250.0, viz_rois=False,
         no_midline=(), midline_tol=None, out_dir=None, verbose=False, fornix=True):
-    """Segment pyAFQ's bundles with MCAT.
+    """Segment pyAFQ's bundles with MPAT.
 
     afq         ``ParticipantAFQ`` or ``GroupAFQ`` (every participant in turn)
     n_proc      threads
@@ -579,21 +579,21 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
     angle       maximum turn per one-voxel hop (degrees)
     double_odf  weight each hop by the fODF where it lands (False: singleODF, like pyAFQ's
                 first-order probabilistic tracker)
-    cores       also write each bundle's ridge-path core (mcat.core)
+    cores       also write each bundle's ridge-path core (mpat.core)
     viz         also write a MIP collage of all bundles (PNG), a viewer page of all bundles
                 (densities and cores), and one page per bundle with its visitation-ODF glyphs
-                and the fODF (mcat.viewer.save_html).  Pages load NiiVue from a CDN.
+                and the fODF (mpat.viewer.save_html).  Pages load NiiVue from a CDN.
     viz_rois    the viewer pages also show each bundle's include / exclude ROIs
     no_midline  bundle names whose cross_midline=False is ignored (no other-hemisphere exclusion)
     midline_tol mm past the midline the corticospinal tracts may go before the other hemisphere
                 is excluded (default: their rule, 10; 0: a strict cut); every other one-sided bundle
-                follows its own rule (mcat.bundles; default a strict cut at x = 0)
+                follows its own rule (mpat.bundles; default a strict cut at x = 0)
     max_length  soft maximum streamline length (mm; 0: none).  Before any bundle is solved,
                 direction states from which most walkers would still be walking after this
                 long -- traps where they circle, unable to turn out under the angle limit --
-                become invalid ends for every bundle (mcat.solve.overlength_states); the
+                become invalid ends for every bundle (mpat.solve.overlength_states); the
                 survival per voxel is written to <stem>_desc-overlength_map.nii.gz
-    out_dir     write MCAT's outputs here instead of <pyAFQ output_dir>/mcat (mcat-moments);
+    out_dir     write MPAT's outputs here instead of <pyAFQ output_dir>/mpat (mpat-moments);
                 pyAFQ's derivatives are only read.  For a GroupAFQ: <out_dir>/sub-<s>/ses-<t>
     fornix      the anterior thalamic radiations exclude the fornix / septum on the midline
                 (FORNIX_BOX_MNI; False: as pyAFQ defines them)
@@ -620,10 +620,10 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
         pve_img, bm_img = nib.load(afq.export("pve_internal")), nib.load(afq.export("brain_mask"))
     with clock("tissue labels"):
         transient, absorb, dseg = tissue_labels(sh_img, pve_img, bm_img)
-    out = mcat_dir(afq, moments, out_dir)
+    out = mpat_dir(afq, moments, out_dir)
     out.mkdir(parents=True, exist_ok=True)
     stem = str(out / Path(afq.kwargs["base_fname"]).name)
-    nib.save(nib.Nifti1Image(dseg, sh_img.affine), f"{stem}_desc-mcat_dseg.nii.gz")
+    nib.save(nib.Nifti1Image(dseg, sh_img.affine), f"{stem}_desc-mpat_dseg.nii.gz")
     # pyAFQ's tissue from SynthSeg: its thalami stand in for the template's thalamic ROIs
     with clock("pyAFQ inputs"):
         thal = _thalami_if_synthseg(afq, sh_img, synthseg_thalamus)
@@ -702,7 +702,7 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
     results = segment_bundles(chain, specs(), launches, tol=tol, max_mem=_budget(max_mem, chain, launches),
                               on_result=write,
                                on_trapped=trapped, verbose=verbose, clock=clock)
-    with open(f"{stem}_desc-mcat_table.tsv", "w", newline="") as fh:
+    with open(f"{stem}_desc-mpat_table.tsv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t")
         w.writeheader()
         w.writerows(rows)
@@ -718,6 +718,6 @@ def run(afq, n_proc, max_mem="auto", bundles=None, moments=False, tol=1e-6, angl
             t1 = None
         visualize(out, stem, [re.sub(r"[^A-Za-z0-9]", "", n) for n in results], sh_path, t1=t1, rois=viz_rois)
         clock.add("viz", time.perf_counter() - t_viz)
-    clock.report("MCAT time per stage", time.time() - t0)
-    log.info("MCAT: %d bundles in %.0fs -> %s", len(results), time.time() - t0, out)
+    clock.report("MPAT time per stage", time.time() - t0)
+    log.info("MPAT: %d bundles in %.0fs -> %s", len(results), time.time() - t0, out)
     return results

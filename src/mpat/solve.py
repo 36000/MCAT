@@ -28,7 +28,7 @@ import numpy as np
 from . import kernel as K
 from .chain import VALID_ENDS
 
-log = logging.getLogger("mcat")
+log = logging.getLogger("mpat")
 
 class Clock:
     """Wall time per stage, summed over calls: ``with clock("forward"): ...``."""

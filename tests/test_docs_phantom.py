@@ -1,4 +1,4 @@
-"""The documentation's phantom: MCAT's exact density agrees with Monte Carlo tracking sampled
+"""The documentation's phantom: MPAT's exact density agrees with Monte Carlo tracking sampled
 from the same chain, and the docs' helper that splits a solve into its forward and backward
 parts reproduces segment_bundles.  (The figures in docs/algorithm.md rely on both.)"""
 import sys

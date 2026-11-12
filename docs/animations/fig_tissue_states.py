@@ -7,7 +7,7 @@ import phantom as P
 def make():
     import matplotlib.pyplot as plt
 
-    from mcat.geometry import OFFSETS, build_geometry
+    from mpat.geometry import OFFSETS, build_geometry
 
     d = P.tissue()
     fig = plt.figure(figsize=(12, 5.4))

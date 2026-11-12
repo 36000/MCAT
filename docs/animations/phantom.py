@@ -1,8 +1,8 @@
 """A small synthetic brain for the documentation's figures and animations.
 
-Everything the docs draw is computed by MCAT itself (``mcat.Chain``, ``mcat.segment_bundles``,
-``mcat.bundle_core``...) on this phantom: one slice of white matter, 2 mm voxels, sandwiched
-between two slices of CSF.  Walkers never enter CSF (MCAT gives those hops zero probability and
+Everything the docs draw is computed by MPAT itself (``mpat.Chain``, ``mpat.segment_bundles``,
+``mpat.bundle_core``...) on this phantom: one slice of white matter, 2 mm voxels, sandwiched
+between two slices of CSF.  Walkers never enter CSF (MPAT gives those hops zero probability and
 renormalises the rest), so the whole chain lives in the plane and can be drawn in 2-D.
 
 In the plane:
@@ -32,7 +32,7 @@ R_BRAIN = 18.5
 ARC_C, ARC_R, ARC_W = np.array([19.5, 5.0]), 13.0, 2.2     # arc centre, radius, half width
 STEM_X, STEM_W = 19.5, 1.6                                  # stem: vertical, x = STEM_X +- STEM_W
 VENT_C, VENT_R = np.array([11.5, 25.0]), 2.6
-CACHE = Path(os.environ.get("MCAT_DOCS_CACHE", Path(__file__).resolve().parents[1] / "build" / "cache"))
+CACHE = Path(os.environ.get("MPAT_DOCS_CACHE", Path(__file__).resolve().parents[1] / "build" / "cache"))
 
 # ------------------------------------------------------------------ style
 # Validated (dataviz skill) categorical slots, used in this fixed order; light surface.
@@ -71,17 +71,17 @@ def _ramp(name, colors):
 
 def mass_cmap():
     """Sequential, one hue (orange), light -> dark: walker mass, occupancy, densities."""
-    return _ramp("mcat_mass", ["#fdf1ea", "#f9c4a8", "#f28d5e", "#eb6834", "#b8461a", "#6e2508"])
+    return _ramp("mpat_mass", ["#fdf1ea", "#f9c4a8", "#f28d5e", "#eb6834", "#b8461a", "#6e2508"])
 
 
 def prob_cmap():
     """Sequential, one hue (blue), light -> dark: probabilities (completion, seed prob)."""
-    return _ramp("mcat_prob", ["#f5f9fe", "#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"])
+    return _ramp("mpat_prob", ["#f5f9fe", "#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"])
 
 
 def div_cmap():
     """Diverging blue <-> red with a neutral grey midpoint: signed terms."""
-    return _ramp("mcat_div", ["#104281", "#3987e5", "#9ec5f4", "#f0efec", "#f3a5a4", "#e34948", "#8f1d1c"])
+    return _ramp("mpat_div", ["#104281", "#3987e5", "#9ec5f4", "#f0efec", "#f3a5a4", "#e34948", "#8f1d1c"])
 
 
 def tissue_rgba(alpha_wm=1.0):
@@ -203,7 +203,7 @@ def fibre_field():
 
 def _sh_fit(vertices, sh_order=8):
     """(V, ncoef) least squares: SH coefficients from sphere values, in the basis
-    mcat.geometry._sh_basis evaluates (DIPY descoteaux07, legacy, symmetric)."""
+    mpat.geometry._sh_basis evaluates (DIPY descoteaux07, legacy, symmetric)."""
     from dipy.core.sphere import Sphere
     from dipy.reconst.shm import sh_to_sf_matrix
 
@@ -214,7 +214,7 @@ def _sh_fit(vertices, sh_order=8):
 @lru_cache(None)
 def volumes():
     """(sh (N, N, 3, 45), transient (N, N, 3), absorb_class (N, N, 3), dseg (N, N)) for
-    mcat.Chain.build.  Fibre fODFs are sharp Watson lobes; grey matter is isotropic."""
+    mpat.Chain.build.  Fibre fODFs are sharp Watson lobes; grey matter is isotropic."""
     from mittens.io import default_sphere
 
     V = np.asarray(default_sphere(), float)
@@ -273,7 +273,7 @@ def arc_rois():
 
 
 def arc_spec(include=True, exclude=True, ends=True, name="Arc"):
-    from mcat.afq import seal_26
+    from mpat.afq import seal_26
 
     r = arc_rois()
     spec = dict(name=name)
@@ -286,13 +286,13 @@ def arc_spec(include=True, exclude=True, ends=True, name="Arc"):
     return spec
 
 
-# ------------------------------------------------------------------ MCAT on the phantom
+# ------------------------------------------------------------------ MPAT on the phantom
 _CHAINS = {}
 
 
 def build_chain(moments=False, double_odf=True, angle=35.0):
-    """The real mcat.Chain on the phantom (transitions cached in ``docs/build/cache/``)."""
-    from mcat import Chain, ChainConfig
+    """The real mpat.Chain on the phantom (transitions cached in ``docs/build/cache/``)."""
+    from mpat import Chain, ChainConfig
 
     key = (moments, double_odf, angle)
     if key not in _CHAINS:
@@ -309,7 +309,7 @@ _LAUNCHES = {}
 
 
 def launches(chain):
-    from mcat import prepare_launches
+    from mpat import prepare_launches
 
     if id(chain) not in _LAUNCHES:
         _LAUNCHES[id(chain)] = prepare_launches(chain, seeds())
@@ -329,7 +329,7 @@ def state_plane(chain, x):
 
 
 def segment(chain, spec, tol=1e-10):
-    from mcat import segment_bundles
+    from mpat import segment_bundles
 
     return segment_bundles(chain, [spec], launches(chain), tol=tol, max_mem=4e9)[spec["name"]]
 
@@ -380,13 +380,13 @@ def launch_vector(chain, L, weights=None):
 
 
 def reactive_parts(chain, spec, tol=1e-10, max_iter=5000):
-    """The pieces mcat.solve._solve_group multiplies, for one bundle and one column at a time:
+    """The pieces mpat.solve._solve_group multiplies, for one bundle and one column at a time:
     forward occupancy S (n_states, C), completion probability beta (n_states, C), the
     columns' signs and labels, and the resulting density per voxel (Nt,).  Mirrors
     _solve_group (single-value chain), so density == segment_bundles' density_t."""
-    from mcat import kernel as K
-    from mcat.chain import VALID_ENDS
-    from mcat.solve import _Plan, solve_series
+    from mpat import kernel as K
+    from mpat.chain import VALID_ENDS
+    from mpat.solve import _Plan, solve_series
 
     L = launches(chain)
     p = _Plan(chain, spec, VALID_ENDS)
@@ -475,7 +475,7 @@ def _make_sampler():
 
 
 class MonteCarlo:
-    """Classic probabilistic tracking, sampled from the same Markov chain MCAT solves exactly:
+    """Classic probabilistic tracking, sampled from the same Markov chain MPAT solves exactly:
     each streamline is two half-walks from a seed, each step drawn from the chain's
     transition rows."""
 
@@ -529,7 +529,7 @@ class MonteCarlo:
 
 def bundle_test(chain, spec):
     """f(halves) -> True if the streamline meets ``spec`` (the event solve.py computes)."""
-    from mcat.chain import VALID_ENDS
+    from mpat.chain import VALID_ENDS
 
     t_vox = chain.t_lin
     pad = lambda m: np.pad(m, 1).ravel() if m is not None else None  # noqa: E731
@@ -560,7 +560,7 @@ def bundle_test(chain, spec):
 
 
 def monte_carlo_density(chain, spec, n, seed=0, checkpoints=None):
-    """Sampled bundle density (expected steps per voxel, summed over seeds, as MCAT's
+    """Sampled bundle density (expected steps per voxel, summed over seeds, as MPAT's
     density_map) from ``n`` streamlines with uniformly drawn seeds.  With ``checkpoints``,
     yields (n_so_far, density estimate) at each; else returns the final estimate."""
     L = launches(chain)

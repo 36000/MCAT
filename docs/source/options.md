@@ -1,6 +1,6 @@
 # Options
 
-| `mcat.run(...)` | CLI | default | |
+| `mpat.run(...)` | CLI | default | |
 |---|---|---|---|
 | `n_proc` | `--n-proc` | required | threads |
 | `max_mem` | `--max-mem` | required | memory budget, bytes or e.g. `"16GB"`. Bundles are packed into groups that share every pass over the transition matrix; the budget sets how many fit. |

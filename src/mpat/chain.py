@@ -22,7 +22,7 @@ from scipy import ndimage
 from . import kernel as K
 from .geometry import OFFSETS, build_geometry, pmf_and_cone_mass, seed_peaks
 
-log = logging.getLogger("mcat")
+log = logging.getLogger("mpat")
 
 ABSORB_CLASSES = ("outside", "gm", "csf", "edge")  # tissue class ids 0..3 (csf: never entered)
 CSF = ABSORB_CLASSES.index("csf")

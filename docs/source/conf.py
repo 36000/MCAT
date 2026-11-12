@@ -1,4 +1,4 @@
-"""Sphinx configuration for the MCAT documentation (MyST Markdown)."""
+"""Sphinx configuration for the MPAT documentation (MyST Markdown)."""
 from pathlib import Path
 
 # docs/
@@ -7,13 +7,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DOCS = HERE.parent
 
-project = "MCAT"
-author = "The MCAT developers"
-copyright = "2026, the MCAT developers"
+project = "MPAT"
+author = "The MPAT developers"
+copyright = "2026, the MPAT developers"
 try:
     from importlib.metadata import version as _v
 
-    release = _v("mcat-tractography")
+    release = _v("mpat-tractography")
 except Exception:  # pragma: no cover
     release = "0.1.0"
 version = release
@@ -28,9 +28,9 @@ myst_enable_extensions = ["dollarmath", "colon_fence", "deflist"]
 myst_heading_anchors = 3
 
 html_theme = "pydata_sphinx_theme"
-html_title = "MCAT"
+html_title = "MPAT"
 html_theme_options = {
-    "github_url": "https://github.com/rokemlab/MCAT",
+    "github_url": "https://github.com/rokemlab/MPAT",
     "navigation_with_keys": True,
 }
 html_context = {"default_mode": "light"}

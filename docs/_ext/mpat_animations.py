@@ -9,10 +9,10 @@ Layout (``docs/``)::
 
 At ``builder-inited`` every ``animations/anim_*.py`` and ``animations/fig_*.py`` is rendered
 (by ``animations/_render.py``, one subprocess each, in parallel) into ``build/generated/``,
-unless its output is up to date: a hash of the script, the shared phantom module and MCAT's
+unless its output is up to date: a hash of the script, the shared phantom module and MPAT's
 source is kept in ``build/generated/.hashes.json``.
 
-``MCAT_DOCS_ANIMATIONS``:  ``mp4`` (default), ``gif`` (no ffmpeg needed), or ``skip`` (render
+``MPAT_DOCS_ANIMATIONS``:  ``mp4`` (default), ``gif`` (no ffmpeg needed), or ``skip`` (render
 nothing; missing outputs become placeholders, for quick text edits).
 
 In MyST, an animation (a numbered figure holding a video; ``:plain:`` for an unnumbered one)::
@@ -55,13 +55,13 @@ BLANK_PNG = base64.b64decode(  # 1x1 transparent PNG: a placeholder in skip mode
 
 
 def paths(srcdir):
-    """(animation scripts, rendered output, MCAT's package source) for docs/source = srcdir."""
+    """(animation scripts, rendered output, MPAT's package source) for docs/source = srcdir."""
     docs = Path(srcdir).resolve().parent
-    return docs / "animations", docs / "build" / "generated", docs.parent / "src" / "mcat"
+    return docs / "animations", docs / "build" / "generated", docs.parent / "src" / "mpat"
 
 
 def _mode():
-    return os.environ.get("MCAT_DOCS_ANIMATIONS", "mp4").lower()
+    return os.environ.get("MPAT_DOCS_ANIMATIONS", "mp4").lower()
 
 
 def _digest(files):
@@ -77,7 +77,7 @@ def render_all(app):
     out.mkdir(parents=True, exist_ok=True)
     mode = _mode()
     if mode == "skip":
-        log.info("[mcat] MCAT_DOCS_ANIMATIONS=skip: not rendering animations")
+        log.info("[mpat] MPAT_DOCS_ANIMATIONS=skip: not rendering animations")
         for s in adir.glob("fig_*.py"):
             f = out / f"{s.stem}.png"
             if not f.exists():
@@ -96,15 +96,15 @@ def render_all(app):
             continue
         todo.append((s, key, h))
     if not todo:
-        log.info("[mcat] animations up to date")
+        log.info("[mpat] animations up to date")
         return
     env = dict(os.environ, MPLBACKEND="Agg")
     runner = str(adir / "_render.py")
-    log.info("[mcat] building the phantom's chains")
+    log.info("[mpat] building the phantom's chains")
     t0 = time.time()
     r = subprocess.run([sys.executable, runner, "--warm"], env=env, capture_output=True, text=True)
     if r.returncode:
-        log.warning("[mcat] phantom warm-up failed:\n%s", r.stderr[-3000:])
+        log.warning("[mpat] phantom warm-up failed:\n%s", r.stderr[-3000:])
         return
 
     def one(item):
@@ -114,17 +114,17 @@ def render_all(app):
                            capture_output=True, text=True)
         return s, key, h, p, time.time() - t
 
-    workers = int(os.environ.get("MCAT_DOCS_JOBS", max(1, (os.cpu_count() or 2) // 2)))
-    log.info("[mcat] rendering %d animations/figures with %d workers", len(todo), workers)
+    workers = int(os.environ.get("MPAT_DOCS_JOBS", max(1, (os.cpu_count() or 2) // 2)))
+    log.info("[mpat] rendering %d animations/figures with %d workers", len(todo), workers)
     with ThreadPoolExecutor(workers) as ex:
         for s, key, h, p, dt in ex.map(one, todo):
             if p.returncode:
-                log.warning("[mcat] %s failed:\n%s", s.name, p.stderr[-3000:])
+                log.warning("[mpat] %s failed:\n%s", s.name, p.stderr[-3000:])
                 continue
             hashes[key] = h
-            log.info("[mcat]   %s (%.0fs)", s.stem, dt)
+            log.info("[mpat]   %s (%.0fs)", s.stem, dt)
     hfile.write_text(json.dumps(hashes, indent=1))
-    log.info("[mcat] done in %.0fs", time.time() - t0)
+    log.info("[mpat] done in %.0fs", time.time() - t0)
 
 
 class _Generated(SphinxDirective):
@@ -178,7 +178,7 @@ class Animation(_Generated):
         video, _ = self.generated(f"{stem}.{ext}")
         poster, poster_uri = self.generated(f"{stem}.png")
         plain = "plain" in self.options        # not a numbered figure (e.g. on the landing page)
-        fig = (nodes.container if plain else nodes.figure)(classes=["mcat-animation"])
+        fig = (nodes.container if plain else nodes.figure)(classes=["mpat-animation"])
         if not plain:
             self.add_name(fig)
         static = "../" * self.env.docname.count("/") + "_static/"
@@ -186,18 +186,18 @@ class Animation(_Generated):
         alt = self.options.get("alt", self.arguments[0])
         if video.exists():
             if ext == "mp4":
-                html = (f'<video class="mcat-video" controls loop muted autoplay playsinline '
+                html = (f'<video class="mpat-video" controls loop muted autoplay playsinline '
                         f'preload="metadata" poster="{static}{stem}.png" style="width:{width}" '
                         f'aria-label="{alt}"><source src="{static}{stem}.mp4" type="video/mp4">'
                         f'<img src="{static}{stem}.png" alt="{alt}"></video>')
             else:
-                html = f'<img class="mcat-video" src="{static}{stem}.gif" alt="{alt}" style="width:{width}">'
+                html = f'<img class="mpat-video" src="{static}{stem}.gif" alt="{alt}" style="width:{width}">'
             fig += nodes.raw("", html, format="html")
             if poster.exists():
                 fig += addnodes.only("", nodes.image(uri=poster_uri, alt=alt), expr="not html")
         else:
-            fig += nodes.paragraph("", f"[animation '{stem}' not rendered: set MCAT_DOCS_ANIMATIONS=mp4]",
-                                   classes=["mcat-placeholder"])
+            fig += nodes.paragraph("", f"[animation '{stem}' not rendered: set MPAT_DOCS_ANIMATIONS=mp4]",
+                                   classes=["mpat-placeholder"])
         self.caption(fig, plain)
         return [fig]
 
@@ -209,7 +209,7 @@ class GeneratedFigure(_Generated):
 
     def run(self):
         _, uri = self.generated(f"{self.stem()}.png")
-        fig = nodes.figure(classes=["mcat-figure"])
+        fig = nodes.figure(classes=["mpat-figure"])
         self.add_name(fig)
         img = nodes.image(uri=uri, alt=self.options.get("alt", self.arguments[0]))
         if "width" in self.options:

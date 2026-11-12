@@ -1,0 +1,14 @@
+/* MPAT docs */
+figure.mpat-animation video.mpat-video,
+figure.mpat-animation img.mpat-video {
+  max-width: 100%;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 6px;
+  background: white;
+}
+figure.mpat-animation { margin: 1.5rem 0; }
+figure.mpat-animation figcaption { text-align: left; }
+.mpat-placeholder { font-style: italic; color: var(--pst-color-text-muted); }
+html[data-theme="dark"] figure.mpat-animation video.mpat-video,
+html[data-theme="dark"] .bd-content img { filter: none; }
+.bd-main .bd-content .bd-article-container { max-width: 64rem; }

@@ -1,18 +1,18 @@
-# How MCAT works
+# How MPAT works
 
-MCAT computes white-matter bundles as **exact expectations over infinitely many
+MPAT computes white-matter bundles as **exact expectations over infinitely many
 streamlines**. Instead of sampling streamlines and counting where they go, it writes
 probabilistic tracking as an absorbing Markov chain and solves that chain with linear algebra.
 This page walks through the method step by step.
 
-```{admonition} Every figure on this page is computed by MCAT
+```{admonition} Every figure on this page is computed by MPAT
 :class: tip
 
-The figures and animations run MCAT's own code (`mcat.Chain`, `mcat.segment_bundles`,
-`mcat.bundle_core`, ...) on a small synthetic brain, the *phantom* in {numref}`fig-phantom`.
+The figures and animations run MPAT's own code (`mpat.Chain`, `mpat.segment_bundles`,
+`mpat.bundle_core`, ...) on a small synthetic brain, the *phantom* in {numref}`fig-phantom`.
 It is one slice of 2 mm voxels with two crossing bundles: a U-shaped **arc** and a straight
-**stem**. The scripts are in [`docs/animations/`](https://github.com/36000/MCAT/tree/main/docs/animations)
-and are re-run whenever MCAT's source changes.
+**stem**. The scripts are in [`docs/animations/`](https://github.com/36000/MPAT/tree/main/docs/animations)
+and are re-run whenever MPAT's source changes.
 ```
 
 ## 1. Tracking as a random walk, and its expectation
@@ -23,7 +23,7 @@ is then the expected number of steps that the bundle's streamlines take in each 
 Tracking software estimates that expectation from a finite sample of streamlines. The
 estimate is noisy, and the error falls only as $1/\sqrt{N}$.
 
-MCAT computes the expectation itself. The tracker's state (where the walker is, and which
+MPAT computes the expectation itself. The tracker's state (where the walker is, and which
 way it is heading) evolves as a Markov chain. Grey matter, the edge of the brain mask, and
 dead ends are *absorbing* states, where a streamline stops. Expected visits and absorption
 probabilities in an absorbing chain have closed forms: the solutions of linear systems
@@ -32,15 +32,15 @@ probabilities in an absorbing chain have closed forms: the solutions of linear s
 ```{animation} mc_vs_exact
 :name: fig-mc-vs-exact
 
-Monte Carlo tracking, sampled step by step from the *same* transition probabilities that MCAT
-uses, converges to MCAT's exact density. Its error falls as $1/\sqrt{N}$, so 100,000
-streamlines still leave about 2% error. MCAT has no sampling error; only the solver tolerance
+Monte Carlo tracking, sampled step by step from the *same* transition probabilities that MPAT
+uses, converges to MPAT's exact density. Its error falls as $1/\sqrt{N}$, so 100,000
+streamlines still leave about 2% error. MPAT has no sampling error; only the solver tolerance
 remains (`tol`, default $10^{-10}$).
 ```
 
 ## 2. Tissue, and the states of the chain
 
-MCAT takes all of its inputs from [pyAFQ](https://tractometry.org/pyAFQ):
+MPAT takes all of its inputs from [pyAFQ](https://tractometry.org/pyAFQ):
 - the fODF that pyAFQ's tracker would follow
 - the tissue partial-volume estimates (PVE) and the brain mask
 - the seeds
@@ -48,7 +48,7 @@ MCAT takes all of its inputs from [pyAFQ](https://tractometry.org/pyAFQ):
 
 (tissue-table)=
 Each voxel inside the mask gets one of four roles, chosen as pyAFQ's tracker chooses
-(`mcat.afq.tissue_labels`):
+(`mpat.afq.tissue_labels`):
 
 | tissue | rule | role in the chain |
 |---|---|---|
@@ -83,11 +83,11 @@ leaves for one of the 26 neighbours. For each sequence it computes the **exact v
 start points** $\mathrm{vol}_p$ that realise it. The directions come from DSI Studio's
 642-direction sphere, and anisotropic voxels are handled exactly.
 
-MCAT keeps two things from each path that MITTENS's first-order model does not need:
+MPAT keeps two things from each path that MITTENS's first-order model does not need:
 - its **last hop's direction class**, which becomes the walker's memory in the next voxel
 - its **box of start points**, which the spatial-moment closure uses ({ref}`moments`)
 
-See `mcat.geometry.build_geometry`.
+See `mpat.geometry.build_geometry`.
 
 ```{animation} voxel_paths
 :name: fig-voxel-paths
@@ -130,7 +130,7 @@ $$
 Q\big[(v,b) \to (n, b')\big] \;=\; \sum_{e \in b} q_{v,b}(e) \sum_{d_L \in b'} P_v(n, d_L \mid e),
 $$
 and the same sum over neighbours $n$ that are grey matter or edge gives the absorption
-probabilities $R$. See `mcat.kernel.chunk_blocks`.
+probabilities $R$. See `mpat.kernel.chunk_blocks`.
 
 ```{animation} transition
 :name: fig-transition
@@ -148,7 +148,7 @@ probability over the north neighbour, whose fibres run sideways.
 Which (neighbour, arrival class) pairs a class can reach is fixed by the geometry: about
 150 of the 676 combinations. Each transition is therefore stored as a 1-byte slot into its
 class's template plus a float64 weight. One copy serves both directions: forward steps
-scatter $Q^\top x$, and backward steps gather $Qx$ (`mcat.chain.Chain`).
+scatter $Q^\top x$, and backward steps gather $Qx$ (`mpat.chain.Chain`).
 ```
 
 ## 5. The absorbing chain
@@ -160,7 +160,7 @@ $$
 $$
 with $Q$ the transient-to-transient block and $R$ the transient-to-absorbing block. Each
 row of $[\,Q\;R\,]$ plus the row's death probability sums to 1. Mass $x$ spread over the
-states moves to $Q^\top x$ in one step. Everything MCAT computes follows from the
+states moves to $Q^\top x$ in one step. Everything MPAT computes follows from the
 **fundamental matrix** {cite}`kemeny1960finite`
 $$
 N \;=\; (I - Q)^{-1} \;=\; \sum_{t \ge 0} Q^t.
@@ -168,7 +168,7 @@ $$
 - $N_{ij}$ is the expected number of visits to state $j$ by a walker that starts in state $i$.
 - $NR$ gives the probabilities of where the walker ends.
 
-MCAT never forms $N$. It applies it to many vectors at once, as described below.
+MPAT never forms $N$. It applies it to many vectors at once, as described below.
 
 ## 6. Seeds and launches
 
@@ -177,7 +177,7 @@ Seeds are the white-matter voxels on the white/grey-matter interface (pyAFQ's
 peaks found by DIPY's peak finder with pyAFQ's thresholds (relative 0.25, at least 45°
 apart). A streamline along peak $p$ is two **half-walks**: one launched along $+p$ and one
 along $-p$. Each half's first exit from the seed voxel uses the same path sums, with the
-incoming direction fixed to the peak (`mcat.prepare_launches`).
+incoming direction fixed to the peak (`mpat.prepare_launches`).
 
 ```{generated-figure} launches
 :name: fig-launches
@@ -185,7 +185,7 @@ incoming direction fixed to the peak (`mcat.prepare_launches`).
 
 **Left:** the phantom's seeds and the two half-walks of each streamline. **Right:** for the arc
 bundle (end in each foot), the probability that the streamline from each seed belongs to the
-bundle. This is MCAT's `seedprob` output.
+bundle. This is MPAT's `seedprob` output.
 ```
 
 ## 7. Forward pass: where the walkers go
@@ -195,7 +195,7 @@ visits to every state, by every walker from every seed, is
 $$
 S \;=\; \sum_{t\ge 0} \big(Q^\top\big)^t \pi_0 \;=\; (I - Q^\top)^{-1}\pi_0 .
 $$
-MCAT sums this series by **power iteration**: repeated products with $Q^\top$, all seeds at
+MPAT sums this series by **power iteration**: repeated products with $Q^\top$, all seeds at
 once. It stops when the walker mass still in white matter falls below `tol` (default
 $10^{-10}$), relative to the starting mass. A typical bundle loses about 10% of its mass per
 step, which takes 300–500 steps.
@@ -203,7 +203,7 @@ step, which takes 300–500 steps.
 If the remaining mass decays so slowly that power iteration would need 500 or more further
 steps, or stalls (walkers circling in nearly all-white-matter volumes), the rest of the series
 is solved as one linear system with BiCGSTAB {cite}`vandervorst1992bicgstab`
-(`mcat.solve.solve_series`).
+(`mpat.solve.solve_series`).
 
 ```{animation} forward
 :name: fig-forward
@@ -266,7 +266,7 @@ gives the bundle's density.
 ## 10. ROIs
 
 pyAFQ's bundle definitions are turned into requirements on the two halves of a streamline
-(`mcat.afq.bundle_specs`).
+(`mpat.afq.bundle_specs`).
 
 **Exclude ROIs** make states *taboo*. A walker that enters a taboo voxel is removed from the
 column; in the solves, that is a diagonal mask $M$:
@@ -274,7 +274,7 @@ $$
 \beta = (I - MQ)^{-1} M r, \qquad S = \sum_t (M Q^\top)^t \pi_0 .
 $$
 Bundles that may not cross the midline also have the other hemisphere excluded. Before use,
-a one-voxel-thick ROI sheet is *sealed*: grown by its 6-neighbours (`mcat.afq.seal_26`), so
+a one-voxel-thick ROI sheet is *sealed*: grown by its 6-neighbours (`mpat.afq.seal_26`), so
 that walkers stepping diagonally cannot slip through it.
 
 **Include ROIs** need inclusion–exclusion, because "passes through A" is not something a
@@ -314,10 +314,10 @@ Endpoint ROIs are grown by pyAFQ's `dist_to_atlas` before use. pyAFQ's other cri
 ## 11. Many bundles in one solve
 
 Each pair (avoid set, end kind) is one **column**: one backward and one forward series.
-All columns move through the same products with $Q$ and $Q^\top$, so MCAT solves many
+All columns move through the same products with $Q$ and $Q^\top$, so MPAT solves many
 columns, and many bundles, in a single pass over the transition matrix. Bundles are packed in
 order into groups whose columns fit in `max_mem`, at about $12 \times 8$ bytes per state per
-column at the peak (`mcat.solve.max_columns`). A bundle with two include ROIs and start/end
+column at the peak (`mpat.solve.max_columns`). A bundle with two include ROIs and start/end
 ROIs needs $2^2 \times 2 = 8$ columns.
 
 (moments)=
@@ -339,7 +339,7 @@ $$
 The closure is linear, so everything above still applies unchanged: adjoints,
 inclusion–exclusion, and the forward–backward product. The trade-offs:
 - It is not positivity-preserving: masses can go slightly negative.
-- A few loops of states can amplify. `mcat.moments.stabilize` finds them by power iteration
+- A few loops of states can amplify. `mpat.moments.stabilize` finds them by power iteration
   and falls back to the uniform closure in the voxels that carry them.
 - It is about 5× slower.
 
@@ -355,7 +355,7 @@ about 2.5× narrower with moments (SD 1.06 vs 2.54 voxels).
 (outputs-derived)=
 ## 13. What comes out
 
-From $S$, $\beta$, and the absorbed mass, MCAT writes the following (see {doc}`outputs`):
+From $S$, $\beta$, and the absorbed mass, MPAT writes the following (see {doc}`outputs`):
 
 - **Density.** The expected steps of bundle streamlines in each voxel, summed over all seeds.
 - **Endpoints.** The expected bundle endpoints in each grey-matter or edge voxel, two per
@@ -378,7 +378,7 @@ and the stem's keeps the vertical one.
 ```
 
 - **Core.** A single curve along the bundle's density ridge, 100 nodes long
-  (`mcat.bundle_core`). It is found in five steps:
+  (`mpat.bundle_core`). It is found in five steps:
   1. Anchor each end at the endpoint-weighted centre of its endpoints.
   2. Find a most-probable path with Dijkstra and cost $-\log(\text{density}/\text{peak})$ per
      mm. This finds the right corridor but cuts corners.
@@ -396,7 +396,7 @@ and the stem's keeps the vertical one.
 ## 14. Checks
 
 - **Monte Carlo agreement.** {numref}`fig-mc-vs-exact`, and the test suite
-  (`tests/test_docs_phantom.py`), check that sampled streamlines converge to MCAT's density.
+  (`tests/test_docs_phantom.py`), check that sampled streamlines converge to MPAT's density.
 - **Mass balance.** Each bundle's `*_desc-summary.json` reports `endpoint_mass_check`, which
   should be 1.
 - **Clipping.** It also reports `negative_mass_before_clip`, which is nonzero only with

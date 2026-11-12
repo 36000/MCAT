@@ -1,12 +1,12 @@
 # Viewing bundles
 
-`mcat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget for Jupyter
+`mpat.view` returns an [ipyniivue](https://github.com/niivue/ipyniivue) widget for Jupyter
 (JupyterLab, Notebook 7, VS Code, Voila). It shows a 3-D render and three slices. Each
 bundle's density is drawn on a log scale from 1e-3 of its peak, and its core as a tube:
 
 ```python
-import mcat
-mcat.view(f"{output_dir}/mcat", t1=t1_masked, bundles=["LeftArcuate", "LeftCorticospinal"])
+import mpat
+mpat.view(f"{output_dir}/mpat", t1=t1_masked, bundles=["LeftArcuate", "LeftCorticospinal"])
 ```
 
 ## Visitation-ODF glyphs
@@ -29,7 +29,7 @@ as you click or scroll. The slices start at the core's midpoint.
 ## A standalone web page
 
 ```python
-mcat.save_html("bundles.html", folder, glyphs=True)
+mpat.save_html("bundles.html", folder, glyphs=True)
 ```
 
 writes the same scene as a standalone web page, to open in any browser or share. The page has

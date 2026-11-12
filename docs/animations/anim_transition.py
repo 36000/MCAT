@@ -10,7 +10,7 @@ def make():
     from matplotlib.colors import Normalize
     from matplotlib.patches import FancyArrowPatch, Rectangle
 
-    from mcat.geometry import OFFSETS, _sh_basis
+    from mpat.geometry import OFFSETS, _sh_basis
 
     vox = (22, 15, P.Z)       # next to both bundles: the neighbours disagree with this voxel
     chains = {"singleODF": P.build_chain(double_odf=False), "doubleODF": P.build_chain()}

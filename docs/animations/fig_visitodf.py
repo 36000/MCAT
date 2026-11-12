@@ -7,7 +7,7 @@ import phantom as P
 def make():
     import matplotlib.pyplot as plt
 
-    from mcat.geometry import _sh_basis, visitation_odf
+    from mpat.geometry import _sh_basis, visitation_odf
 
     chain = P.build_chain()
     sh = P.volumes()[0]

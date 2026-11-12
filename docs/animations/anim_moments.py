@@ -12,7 +12,7 @@ SEED = (3, 6)
 def _chains():
     from mittens.io import default_sphere
 
-    from mcat import Chain, ChainConfig
+    from mpat import Chain, ChainConfig
 
     V = np.asarray(default_sphere(), float)
     inv = P._sh_fit(V)
@@ -32,7 +32,7 @@ def _chains():
 
 
 def _run(c, steps=64):
-    from mcat.geometry import OFFSETS
+    from mpat.geometry import OFFSETS
 
     nc = c.ncomp
     b = int(np.flatnonzero((OFFSETS == [1, 0, 0]).all(1))[0])

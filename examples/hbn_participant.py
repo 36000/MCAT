@@ -1,17 +1,17 @@
-"""MCAT on one participant of the Healthy Brain Network (HBN-POD2).
+"""MPAT on one participant of the Healthy Brain Network (HBN-POD2).
 
 This follows pyAFQ's "Getting started with pyAFQ - ParticipantAFQ" tutorial
 (https://tractometry.org/pyAFQ/examples/tutorial_examples/plot_002_participant_afq_api.html)
-up to the ``ParticipantAFQ`` object, then segments the bundles with MCAT instead of
+up to the ``ParticipantAFQ`` object, then segments the bundles with MPAT instead of
 tractography + recognition, and draws the results.
 
     python examples/hbn_participant.py --n-proc 8 --max-mem 32GB
     python examples/hbn_participant.py --n-proc 8 --max-mem 32GB --data-dir /scratch/AFQ_data \\
         --bundles "Left Arcuate" "Left Corticospinal"
 
-The data (about 400 MB) go to ``~/AFQ_data/HBN`` by default, as in pyAFQ's tutorial, and MCAT
-writes to ``.../derivatives/afq/sub-NDARAA948VFH/ses-HBNsiteRU/dwi/mcat/``.  ``--figures DIR``
-saves the figures used in MCAT's documentation.
+The data (about 400 MB) go to ``~/AFQ_data/HBN`` by default, as in pyAFQ's tutorial, and MPAT
+writes to ``.../derivatives/afq/sub-NDARAA948VFH/ses-HBNsiteRU/dwi/mpat/``.  ``--figures DIR``
+saves the figures used in MPAT's documentation.
 """
 import argparse
 import os
@@ -54,8 +54,8 @@ def participant(data_dir):
         bvec_file=f"{stem}.bvec",
         t1_file=f"{anat}_desc-preproc_T1w.nii.gz",
         output_dir=output_dir,
-        # MCAT walks on the fODF pyAFQ would track on; CSD, as the mcat command line uses.
-        # (pyAFQ's seeding options -- n_seeds, random_seeds, ... -- do not apply: MCAT
+        # MPAT walks on the fODF pyAFQ would track on; CSD, as the mpat command line uses.
+        # (pyAFQ's seeding options -- n_seeds, random_seeds, ... -- do not apply: MPAT
         # seeds every white/grey-matter interface voxel, with no sampling.)
         tracking_params=dict(odf_model="CSD"),
         pve=pve,
@@ -76,7 +76,7 @@ def _mass_cmap():
     from matplotlib.colors import LinearSegmentedColormap
 
     cm = LinearSegmentedColormap.from_list(
-        "mcat_mass", ["#fdf1ea", "#f9c4a8", "#f28d5e", "#eb6834", "#b8461a", "#6e2508"])
+        "mpat_mass", ["#fdf1ea", "#f9c4a8", "#f28d5e", "#eb6834", "#b8461a", "#6e2508"])
     cm.set_bad(alpha=0.0)
     return cm
 
@@ -88,16 +88,16 @@ def _load(f):
     return np.asarray(img.dataobj, np.float32), img.affine
 
 
-def figure_bundles(mcat_dir, fa_file, path, bundles=SHOWCASE):
+def figure_bundles(mpat_dir, fa_file, path, bundles=SHOWCASE):
     """Small multiples: each bundle's density as a maximum-intensity projection (log scale)
     over the FA's projection, with its core."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm
 
-    from mcat.core import bundle_files
+    from mpat.core import bundle_files
 
     _style()
-    files = bundle_files(mcat_dir)
+    files = bundle_files(mpat_dir)
     fa, aff = _load(fa_file)
     names = [b for b in bundles if b.replace(" ", "").replace("-", "") in files]
     views = [("sagittal", 0), ("axial", 2)]
@@ -126,21 +126,21 @@ def figure_bundles(mcat_dir, fa_file, path, bundles=SHOWCASE):
             if i == 0:
                 ax.set_title(name.replace("Inferior ", "Inf. ").replace("Longitudinal", "Long."), fontsize=10)
     fig.text(0.01, 0.5, "sagittal  ·  axial", rotation=90, va="center", fontsize=10, color="#52514e")
-    fig.suptitle("MCAT bundle densities (maximum-intensity projections, log scale, 1e-3 of peak "
+    fig.suptitle("MPAT bundle densities (maximum-intensity projections, log scale, 1e-3 of peak "
                  "to peak) and cores (blue)", fontsize=11, x=0.01, ha="left")
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
 
-def figure_slices(mcat_dir, fa_file, path, name="Left Arcuate"):
+def figure_slices(mpat_dir, fa_file, path, name="Left Arcuate"):
     """One bundle on three slices through its core's midpoint: density over FA, and its core."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm
 
-    from mcat.core import bundle_files
+    from mpat.core import bundle_files
 
     _style()
-    f = bundle_files(mcat_dir)[name.replace(" ", "")]
+    f = bundle_files(mpat_dir)[name.replace(" ", "")]
     fa, aff = _load(fa_file)
     d, _ = _load(f["density"])
     core = np.loadtxt(f["prefix"] + "_desc-core_path.tsv", skiprows=1, usecols=(1, 2, 3))
@@ -187,15 +187,15 @@ def main(argv=None):
 
     import logging
 
-    import mcat
+    import mpat
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     t0 = time.time()
     myafq = participant(a.data_dir)
     fa_file = myafq.export("dti_fa")             # for the figures' background
-    out = op.join(myafq.kwargs["output_dir"], "mcat-moments" if a.moments else "mcat")
+    out = op.join(myafq.kwargs["output_dir"], "mpat-moments" if a.moments else "mpat")
     if not a.figures_only:
-        results = mcat.run(myafq, n_proc=a.n_proc, max_mem=a.max_mem, bundles=a.bundles,
+        results = mpat.run(myafq, n_proc=a.n_proc, max_mem=a.max_mem, bundles=a.bundles,
                            moments=a.moments)
         print(f"\n{len(results)} bundles in {(time.time() - t0) / 60:.1f} min -> {out}")
         for name, r in results.items():
@@ -204,7 +204,7 @@ def main(argv=None):
         os.makedirs(a.figures, exist_ok=True)
         figure_bundles(out, fa_file, op.join(a.figures, "hbn_bundles.png"))
         figure_slices(out, fa_file, op.join(a.figures, "hbn_left_arcuate.png"))
-        mcat.save_html(op.join(a.figures, "hbn_bundles.html"), out,
+        mpat.save_html(op.join(a.figures, "hbn_bundles.html"), out,
                               bundles=["LeftArcuate", "LeftCorticospinal"], glyphs=True)
         print("figures ->", a.figures)
 

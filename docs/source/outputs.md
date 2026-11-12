@@ -1,6 +1,6 @@
 # Outputs
 
-`mcat.run` writes to `<output_dir>/mcat/`, or to `mcat-moments/` with `moments=True`, next to
+`mpat.run` writes to `<output_dir>/mpat/`, or to `mpat-moments/` with `moments=True`, next to
 pyAFQ's own outputs.
 
 | file | |
@@ -12,8 +12,8 @@ pyAFQ's own outputs.
 | `..._desc-start_mask`, `_desc-end_mask` | the endpoint ROIs used (pyAFQ's `dist_to_atlas` applied) |
 | `..._desc-core_path.tsv`, `_desc-core.tck` | the bundle's core: the cross-section ridge path, 100 nodes |
 | `..._desc-summary.json` | settings, solve diagnostics, mass check |
-| `<sub>_desc-mcat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
-| `<sub>_desc-mcat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
+| `<sub>_desc-mpat_table.tsv` | per bundle: expected streamlines, columns, steps, Krylov products, time |
+| `<sub>_desc-mpat_dseg.nii.gz` | the tissue labels used: 1 WM, 2 GM, 3 CSF, 4 brain edge |
 | `<sub>_desc-chain_cache.npz` | the transition matrix, reused when the inputs and settings match |
 
 ## Reading the summary

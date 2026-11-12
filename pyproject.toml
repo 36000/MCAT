@@ -3,9 +3,9 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcat-tractography"
+name = "mpat-tractography"
 version = "0.1.0"
-description = "MCAT: Markov chain absorbing tractography"
+description = "MPAT: Markov probabilistic absorbing tractography"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }
@@ -26,10 +26,10 @@ docs = [
 ]
 
 [project.scripts]
-mcat = "mcat.cli:main"
+mpat = "mpat.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-mcat = ["viewer.html"]
+mpat = ["viewer.html"]

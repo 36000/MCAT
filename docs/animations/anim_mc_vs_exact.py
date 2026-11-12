@@ -1,4 +1,4 @@
-"""Monte Carlo tracking converges, noisily, to the density MCAT computes exactly."""
+"""Monte Carlo tracking converges, noisily, to the density MPAT computes exactly."""
 import numpy as np
 
 import phantom as P
@@ -48,7 +48,7 @@ def make():
     for a in (a_mc, a_ex):
         P.outline(a, rois["start"] | rois["end"], P.BLUE, lw=1.2)
     t_mc = a_mc.set_title("")
-    a_ex.set_title("MCAT: exact")
+    a_ex.set_title("MPAT: exact")
     P.label(a_ex, (30, 2.5), "endpoint\nROIs", color=P.BLUE, fontsize=9)
     trails = [a_mc.plot([], [], color=P.INK, lw=1.0, alpha=0.75, zorder=6)[0] for _ in range(6)]
 
@@ -65,7 +65,7 @@ def make():
     (dot,) = a_err.plot([], [], "o", color=P.ORANGE, ms=8, mec=P.SURFACE, mew=2)
     a_err.set_xlabel("streamlines sampled, N")
     a_err.set_title("Monte Carlo error")
-    a_err.text(0.03, 0.03, "relative L1 error\nMCAT: 0 (no sampling)", transform=a_err.transAxes,
+    a_err.text(0.03, 0.03, "relative L1 error\nMPAT: 0 (no sampling)", transform=a_err.transAxes,
                color=P.INK2, fontsize=10, va="bottom")
     a_err.yaxis.set_label_position("right")
     a_err.yaxis.tick_right()
