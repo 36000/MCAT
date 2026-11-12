@@ -3,7 +3,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 
-from mat.core import bundle_core, split_ends, write_core
+from mpat.core import bundle_core, split_ends, write_core
 
 
 def _arc_bundle(R=14.0, sigma=1.6, dip=0.25, shape=(44, 44, 11)):
@@ -95,7 +95,7 @@ def test_write_core(tmp_path):
 
 
 def test_tube_and_viewer(tmp_path):
-    from mat.viewer import log_density_u8, tube_obj
+    from mpat.viewer import log_density_u8, tube_obj
 
     xyz = np.stack([np.linspace(0, 30, 20), np.sin(np.linspace(0, 3, 20)) * 5, np.zeros(20)], 1)
     obj = tube_obj(xyz, radius=1.5, sides=10).decode().splitlines()
@@ -108,17 +108,17 @@ def test_tube_and_viewer(tmp_path):
     assert list(u8) == [0, 0, 1, 86, 255]          # 1 + 254 * (1/3)
 
     pytest.importorskip("ipyniivue")
-    from mat.viewer import view
+    from mpat.viewer import view
 
     d, ep, start, end, _ = _arc_bundle()
     aff = np.diag([2.0, 2.0, 2.0, 1.0])
     pre = tmp_path / "sub-01_bundle-ARC"
     for k, a in (("density_map", d), ("endpoints_map", ep), ("start_mask", start), ("end_mask", end)):
         nib.save(nib.Nifti1Image(a.astype(np.float32), aff), f"{pre}_desc-{k}.nii.gz")
-    nib.save(nib.Nifti1Image((d > 0).astype(np.int8), aff), str(tmp_path / "sub-01_desc-mat_dseg.nii.gz"))
+    nib.save(nib.Nifti1Image((d > 0).astype(np.int8), aff), str(tmp_path / "sub-01_desc-mpat_dseg.nii.gz"))
     nv = view(tmp_path)
     assert [v.name for v in nv.volumes][1:] == ["ARC_logdensity.nii.gz"]
-    assert "mat_dseg" in nv.volumes[0].name and [m.name for m in nv.meshes] == ["ARC_core.obj"]
+    assert "mpat_dseg" in nv.volumes[0].name and [m.name for m in nv.meshes] == ["ARC_core.obj"]
     assert (tmp_path / "sub-01_bundle-ARC_desc-core.tck").exists()     # computed and saved
 
 
@@ -130,7 +130,7 @@ def test_glyph_mz3():
     from dipy.data import get_sphere
     from dipy.reconst.shm import sh_to_sf_matrix
 
-    from mat.viewer import glyph_mz3
+    from mpat.viewer import glyph_mz3
 
     u = get_sphere(name="repulsion724").vertices
     _, inv = sh_to_sf_matrix(Sphere(xyz=u), sh_order_max=8, return_inv=True)

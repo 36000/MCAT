@@ -7,10 +7,10 @@ from numba import njit
 from phantoms import crossing_phantom
 from scipy import ndimage
 
-from mat import kernel as K
-from mat.chain import Chain, ChainConfig
-from mat.geometry import build_geometry
-from mat.solve import prepare_launches, segment_bundles, solve_series
+from mpat import kernel as K
+from mpat.chain import Chain, ChainConfig
+from mpat.geometry import build_geometry
+from mpat.solve import prepare_launches, segment_bundles, solve_series
 
 
 # ------------------------------------------------------------------ fixtures
@@ -52,7 +52,7 @@ def test_visitation_odf():
     from dipy.core.sphere import Sphere
     from dipy.reconst.shm import sh_to_sf_matrix
 
-    from mat.geometry import OFFSETS, visitation_odf
+    from mpat.geometry import OFFSETS, visitation_odf
 
     g = build_geometry((2.0, 2.0, 2.0), 35.0)
     V = g.vertices
@@ -254,11 +254,11 @@ def test_pyafq_end_to_end(tmp_path):
     pytest.importorskip("AFQ")
     from synthetic_subject import make_afq, make_subject
 
-    import mat
+    import mpat
 
     f = make_subject(tmp_path / "raw")
-    res = mat.run(make_afq(f, tmp_path / "afq"), n_proc=2, max_mem="2GB")
-    out = tmp_path / "afq" / "mat"
+    res = mpat.run(make_afq(f, tmp_path / "afq"), n_proc=2, max_mem="2GB")
+    out = tmp_path / "afq" / "mpat"
     for b, own in (("A", f["A"]), ("B", f["B"])):
         assert res[b].info["expected_bundle_streamlines"] > 10
         d = nib.load(out / f"sub-01_bundle-{b}_desc-density_map.nii.gz").get_fdata()
@@ -266,7 +266,7 @@ def test_pyafq_end_to_end(tmp_path):
         assert (out / f"sub-01_bundle-{b}_desc-core.tck").exists()
         # visitation ODF: integrates to the density, points along the bundle (A: x, B: y),
         # including where the two bundles cross
-        from mat.geometry import _sh_basis
+        from mpat.geometry import _sh_basis
 
         odf = nib.load(out / f"sub-01_bundle-{b}_desc-visitodf_dwimap.nii.gz").get_fdata()
         m = d > 1e-2 * d.max()
@@ -275,14 +275,14 @@ def test_pyafq_end_to_end(tmp_path):
         sf = odf[m & f["A"] & f["B"]] @ _sh_basis(np.r_[u, -u], odf.shape[-1])
         axis = 0 if b == "A" else 1
         assert (np.argmax(sf[:, :3], 1) == axis).all() and (sf[:, 1 - axis] < 0.05 * sf[:, axis]).all()
-    assert (out / "sub-01_desc-mat_table.tsv").exists()
+    assert (out / "sub-01_desc-mpat_table.tsv").exists()
     pytest.importorskip("ipyniivue")
-    nv = mat.view(out, glyphs=["A"])
+    nv = mpat.view(out, glyphs=["A"])
     assert [m.name for m in nv.meshes] == ["A_core.obj", "B_core.obj", "A_glyphs.mz3"]
     assert nv.scene.crosshair_pos != [0.5, 0.5, 0.5]
     # glyphs follow the slices: every voxel >= 1e-2 of the peak is available, the three
     # slices through the crosshair are meshed
-    from mat.viewer import glyph_mesh, save_html, scene
+    from mpat.viewer import glyph_mesh, save_html, scene
 
     S = scene(out, glyphs=True)
     g = S["glyphs"][0]
