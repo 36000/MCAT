@@ -25,7 +25,7 @@ provides five complementary quantifications:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import numpy as np
 import scipy.sparse as sps
 import scipy.sparse.linalg as spla
@@ -33,16 +33,16 @@ import scipy.sparse.linalg as spla
 from .core import split_ends
 from .fields import flux_orientation
 from .fixels import Lobes, fixel_streamlines, segment_lobes
-from .geometry import class_chord_lengths
+from .geometry import OFFSETS, class_chord_lengths
 
 
 @dataclass
 class BundleQuantification:
     name: str
-    # 1. Chord-weighted physical length (TDI)
+    # 1. Transition-weighted physical length (TDI)
     tdi_mm_t: np.ndarray              # (Nt,) expected streamline path length (mm) per WM voxel
     mean_streamline_length_mm: float  # exact expected length (mm) of a bundle streamline
-    # 2. AFD-calibrated fixel & voxel density ("Analytical SIFT2")
+    # 2. Local fixel AFD attribution (bundle-wise fixel AFD share)
     fixel_share: np.ndarray           # (N_fixels,) n_bundle(f) / n_whole(f) in [0, 1]
     fixel_afd: np.ndarray             # (N_fixels,) share(f) * lobes.integral(f)
     voxel_afd_t: np.ndarray           # (Nt,) sum of fixel_afd in each WM voxel
@@ -66,8 +66,8 @@ class BundleQuantification:
 
 def afd_tract_metrics(bundle_res, whole_density_class, sh_rows, geo, lobes: Lobes = None,
                       vox_vol_mm3: float = 1.0):
-    """Compute fixel routing share, AFD-calibrated fixel & voxel densities, normalized intra-axonal
-    tract volume (mm^3) and unassigned fraction."""
+    """Compute local fixel routing share ``n_bundle(f) / n_whole(f)``, AFD-attributed fixel & voxel
+    densities, AFD-normalized tract volume (mm^3), and mean white-matter AFD integral."""
     if lobes is None:
         lobes = segment_lobes(sh_rows, geo)
     n_b, u_b = fixel_streamlines(bundle_res.density_class, sh_rows, geo, lobes)
@@ -77,11 +77,179 @@ def afd_tract_metrics(bundle_res, whole_density_class, sh_rows, geo, lobes: Lobe
     fixel_afd = share * lobes.integral
     Nt = len(sh_rows)
     voxel_afd = np.bincount(lobes._frow, weights=fixel_afd, minlength=Nt) if lobes.n_fixels else np.zeros(Nt)
-    # Normalize by mean total fODF integral across WM voxels so 1 full-AFD voxel = vox_vol_mm3
+    # Normalize by mean total fODF integral across positive-AFD WM voxels so 1 mean-AFD voxel = vox_vol_mm3
     total_vox_afd = np.bincount(lobes._frow, weights=lobes.integral, minlength=Nt) if lobes.n_fixels else np.ones(Nt)
     mean_wm_afd = float(np.mean(total_vox_afd[total_vox_afd > 0])) if np.any(total_vox_afd > 0) else 1.0
     tract_vol_mm3 = float(voxel_afd.sum() * vox_vol_mm3 / max(mean_wm_afd, 1e-30))
     return share, fixel_afd, voxel_afd, tract_vol_mm3, mean_wm_afd
+
+
+def sift2_optimize_launches(chain, launches, sh_rows, lobes: Lobes = None, n_iter: int = 8,
+                            reg_tikhonov: float = 0.05, step_size: float = 1.0, tol: float = 1e-5,
+                            max_iter: int = 5000, accel: str = "mr", vox_vol_mm3: float = 1.0,
+                            valid_classes=(1, 3)):
+    """Global path-consistent SIFT2 optimization on the Markov chain.
+
+    Finds a single constant cross-sectional multiplier ``w_p = w_{0,p} * exp(f_p)`` for each
+    launched seed peak-pair ``p in 0..P-1`` so that the whole-brain Markov fixel visitation
+    ``n_whole(f; w)`` matches the physical fODF lobe integrals ``AFD(f) = lobes.integral[f]``
+    across all white-matter fixels simultaneously:
+
+        min_{f_p}  0.5 * sum_f (mu * n_whole(f; w_0 * exp(f)) - AFD_norm(f))^2
+                 + 0.5 * reg_tikhonov * sum_p w_{0,p} * L_p * f_p^2
+
+    Because only the seed-launch weights ``launches.pair_w`` are scaled (one constant weight per
+    trajectory from start to end), every bundle segmented with the returned ``sift2_launches``
+    preserves exact reactive-flux conservation (``L + inflow = n = outflow + A``) and path
+    consistency along its entire length.
+
+    Returns ``(sift2_launches, info)`` where ``sift2_launches`` is a ``Launches`` object whose
+    ``pair_w`` carries the SIFT2-calibrated cross-sectional weights, and ``info`` contains
+    convergence diagnostics and fixel-wise ``AFD(f)`` fit metrics before and after optimization.
+    """
+    from . import kernel as K
+    from .solve import _Plan, solve_series
+
+    if lobes is None:
+        lobes = segment_lobes(sh_rows, chain.geo)
+
+    Nt, nb, Ns, nc = chain.t_lin.size, chain.nb, chain.n_states, chain.ncomp
+    if nc != 1:
+        raise ValueError("sift2_optimize_launches requires a scalar chain (ncomp == 1)")
+
+    # Target fixel AFD volume (normalized so mean positive WM voxel has total AFD = vox_vol_mm3)
+    total_vox_afd = np.bincount(lobes._frow, weights=lobes.integral, minlength=Nt) if lobes.n_fixels else np.ones(Nt)
+    mean_wm_afd = float(np.mean(total_vox_afd[total_vox_afd > 0])) if np.any(total_vox_afd > 0) else 1.0
+    afd_target = (lobes.integral.astype(np.float64) / max(mean_wm_afd, 1e-30)) * float(vox_vol_mm3)
+
+    # 1. Solve single-column whole-brain backward completion beta_whole once
+    plan = _Plan(chain, {"name": "_whole"}, valid_classes)
+    mask = plan.mask
+    r_rhs = chain.absorb_rhs(plan.absw) * mask
+    beta_whole, _ = solve_series(chain.mul_backward, r_rhs, mask, tol, max_iter, "sift2_bwd", 1, accel=accel)
+    beta_whole = np.ascontiguousarray(beta_whole)
+
+    P = launches.pair_seed.size
+    seed_ok = (~plan.taboo[launches.hseed][:, plan.xcol]).astype(np.float64)
+    vals = np.empty((launches.hseed.size, 1), dtype=np.float64)
+    K.half_values(launches.hseed, launches.lptr, launches.lkey, launches.lval, chain.label,
+                  chain.noff, chain.tindex, chain.aindex, nb, beta_whole, plan.absw, seed_ok, vals)
+    V = vals.reshape(P, 2)
+    pb = V[:, 0] * V[:, 1]
+    coef_base = V[:, ::-1].reshape(2 * P, 1) * seed_ok
+
+    ti = chain.tindex[launches.seed_lin]
+    pt = ti[launches.pair_seed]
+    on = pt >= 0
+    b0 = chain.geo.vbin[launches.pair_d[on, 0]]
+    b1 = chain.geo.vbin[launches.pair_d[on, 1]]
+    pt_on = pt[on]
+    pb_on = pb[on]
+    zero_absw = np.zeros((chain.a_lin.size, 1), dtype=np.float64)
+    kill = getattr(chain, "kill", None)
+
+    frow = lobes._frow
+    w_fix = lobes._w_fix
+
+    def forward_fixels(w_pair):
+        """Exact forward operator A(w_pair): streamline weights (P,) -> fixel visits (N_fixels,)."""
+        coef = coef_base * np.repeat(w_pair, 2)[:, None]
+        pi0 = np.zeros((Ns, 1), dtype=np.float64)
+        a0 = np.zeros((chain.a_lin.size, 1), dtype=np.float64)
+        K.scatter_init(launches.hseed, launches.lptr, launches.lkey, launches.lval, coef,
+                       chain.label, chain.noff, chain.tindex, chain.aindex, nb, plan.taboo,
+                       plan.xcol, pi0, a0)
+        if kill is not None:
+            pi0[kill] = 0.0
+        S, _ = solve_series(chain.mul_forward, pi0, mask, tol, max_iter, "sift2_fwd", 1, accel=accel)
+        dcls = (S[:, 0] * beta_whole[:, 0]).reshape(Nt, nb)
+        w0 = 0.5 * (w_pair[on] * pb_on)
+        np.add.at(dcls, (pt_on, b0), w0)
+        np.add.at(dcls, (pt_on, b1), w0)
+        dcls = np.maximum(dcls, 0.0)
+        n_fix = np.einsum("ij,ij->i", dcls[frow], w_fix) if lobes.n_fixels else np.zeros(0)
+        return n_fix, dcls
+
+    def adjoint_pairs(v_fix):
+        """Exact transpose operator A^T(v_fix): fixel vector (N_fixels,) -> pair sensitivities (P,)."""
+        g_dcls = np.zeros((Nt, nb), dtype=np.float64)
+        if lobes.n_fixels:
+            np.add.at(g_dcls, frow, np.asarray(v_fix, np.float64)[:, None] * w_fix)
+        g_w = np.zeros(P, dtype=np.float64)
+        g_w[on] = 0.5 * pb_on * (g_dcls[pt_on, b0] + g_dcls[pt_on, b1])
+        rhs_adj = (g_dcls.reshape(-1) * beta_whole[:, 0])[:, None] * mask
+        if kill is not None:
+            rhs_adj[kill] = 0.0
+        U_adj, _ = solve_series(chain.mul_backward, rhs_adj, mask, tol, max_iter, "sift2_adj", 1, accel=accel)
+        vals_adj = np.empty((2 * P, 1), dtype=np.float64)
+        K.half_values(launches.hseed, launches.lptr, launches.lkey, launches.lval, chain.label,
+                      chain.noff, chain.tindex, chain.aindex, nb, np.ascontiguousarray(U_adj),
+                      zero_absw, seed_ok, vals_adj)
+        g_w += (vals_adj * coef_base).reshape(P, 2).sum(1)
+        return np.maximum(g_w, 0.0)
+
+    # Precompute target back-projection A^T(AFD_target) once (1 backward solve)
+    c_target = adjoint_pairs(afd_target)
+
+    w0_pair = launches.pair_w.astype(np.float64).copy()
+    f_log = np.zeros(P, dtype=np.float64)
+
+    # Evaluate initial uncalibrated fixel visits (k = 0)
+    n_fix_init, dcls_init = forward_fixels(w0_pair)
+    mu_init = float(np.dot(n_fix_init, afd_target) / max(np.dot(n_fix_init, n_fix_init), 1e-30))
+    n_fix_cur = n_fix_init.copy()
+    dcls_cur = dcls_init
+    mu_cur = mu_init
+
+    def _fit_stats(n_f, mu_val):
+        pred = mu_val * n_f
+        cos = float(np.dot(pred, afd_target) / max(np.linalg.norm(pred) * np.linalg.norm(afd_target), 1e-30))
+        r = float(np.corrcoef(pred, afd_target)[0, 1]) if len(pred) > 1 else 1.0
+        ss_res = float(np.sum((pred - afd_target) ** 2))
+        ss_tot = float(np.sum((afd_target - afd_target.mean()) ** 2))
+        r2 = float(1.0 - ss_res / max(ss_tot, 1e-30))
+        rel_l2 = float(np.linalg.norm(pred - afd_target) / max(np.linalg.norm(afd_target), 1e-30))
+        return dict(cosine=round(cos, 4), pearson_r=round(r, 4), r2=round(r2, 4), rel_l2_err=round(rel_l2, 4))
+
+    stats_init = _fit_stats(n_fix_init, mu_init)
+    history = [dict(iter=0, mu=round(mu_init, 6), **stats_init)]
+
+    for it in range(1, n_iter + 1):
+        # Back-project current predicted fixel density A^T(mu * n_fix_cur) (1 backward solve)
+        d_pred = adjoint_pairs(mu_cur * n_fix_cur)
+        active_p = (c_target > 1e-15) & (d_pred > 1e-15)
+        log_ratio = np.zeros(P, dtype=np.float64)
+        log_ratio[active_p] = np.log(c_target[active_p] / d_pred[active_p])
+        # Regularized multiplicative update in log-space (exact ISRA + Tikhonov damping)
+        f_log = (f_log + step_size * log_ratio) / (1.0 + step_size * reg_tikhonov)
+        f_log = np.clip(f_log, -4.0, 4.0)
+        w_cur = w0_pair * np.exp(f_log)
+
+        n_fix_cur, dcls_cur = forward_fixels(w_cur)
+        mu_cur = float(np.dot(n_fix_cur, afd_target) / max(np.dot(n_fix_cur, n_fix_cur), 1e-30))
+        st = _fit_stats(n_fix_cur, mu_cur)
+        history.append(dict(iter=it, mu=round(mu_cur, 6), **st))
+
+    w_final = w0_pair * mu_cur * np.exp(f_log)
+    sift2_launches = replace(launches, pair_w=w_final)
+    info = dict(
+        n_fixels=int(lobes.n_fixels),
+        n_streamlines=int(P),
+        n_iter=int(n_iter),
+        reg_tikhonov=float(reg_tikhonov),
+        mean_wm_afd=round(mean_wm_afd, 6),
+        mu_init=round(mu_init, 6),
+        mu_final=round(mu_cur, 6),
+        initial_fit=stats_init,
+        final_fit=history[-1],
+        history=history,
+        log_weights=f_log,
+        afd_target_mm3=afd_target,
+        n_fix_init_mm3=mu_init * n_fix_init,
+        n_fix_sift2_mm3=mu_cur * n_fix_cur,
+        whole_density_class_sift2=mu_cur * dcls_cur,
+    )
+    return sift2_launches, info
 
 
 def routing_entropy_and_coherence(flux26, zooms=(1.0, 1.0, 1.0)):
@@ -276,18 +444,7 @@ def quantify_bundle(chain, bundle_res, whole_density_class, sh_rows, affine, lob
         end_mask = getattr(bundle_res, "end_mask", None)
     zooms = np.linalg.norm(np.asarray(affine, float)[:3, :3], axis=0)
     vox_vol_mm3 = float(np.abs(np.linalg.det(np.asarray(affine, float)[:3, :3])))
-
-    # 1. Chord-weighted physical length (TDI in mm) & expected streamline length (mm)
-    chords_mm = class_chord_lengths(chain.geo, zooms=zooms)
-    tdi_mm_t = (np.asarray(bundle_res.density_class, np.float64) * chords_mm[None, :]).sum(1)
     n_streamlines = max(float(bundle_res.info.get("expected_bundle_streamlines", bundle_res.seed_prob.sum())), 1e-30)
-    mean_length_mm = float(tdi_mm_t.sum() / n_streamlines)
-
-    # 2. AFD-calibrated fixel & voxel fiber density ("Analytical SIFT2")
-    share, fixel_afd, voxel_afd_t, tract_vol_mm3, mean_wm_afd = afd_tract_metrics(
-        bundle_res, whole_density_class, sh_rows, chain.geo, lobes=lobes, vox_vol_mm3=vox_vol_mm3
-    )
-    eff_area_mm2 = float(tract_vol_mm3 / max(mean_length_mm, 1e-30))
 
     # 3 & 4. Endpoint split, committors, harmonic flux coordinate, and boundary conductance
     ep_vol = chain.to_volume(bundle_res.endpoints_a, which="absorbing")
@@ -325,6 +482,20 @@ def quantify_bundle(chain, bundle_res, whole_density_class, sh_rows, affine, lob
         visits_t = fields.visits() if fields is not None else np.asarray(bundle_res.density_t, np.float64)
         q_committor_t = None
 
+    # 1. Exact transition-weighted physical length (TDI in mm) & expected streamline length (mm)
+    # Computed directly from the conserved transition flux F(u, n) * ||offset_n * zooms||_2,
+    # avoiding step-0 seed inflation and class-average approximations.
+    step_lengths_mm = np.linalg.norm(OFFSETS.astype(np.float64) * zooms[None, :], axis=1)  # (26,)
+    tdi_mm_t = (np.maximum(flux26, 0.0) * step_lengths_mm[None, :]).sum(1)
+    abs_total_mm = float(np.maximum(bundle_res.endpoints_a, 0.0).sum()) * 0.5 * float(np.mean(zooms))
+    mean_length_mm = float((tdi_mm_t.sum() + abs_total_mm) / n_streamlines)
+
+    # 2. Local fixel AFD attribution (bundle-wise fixel AFD share)
+    share, fixel_afd, voxel_afd_t, tract_vol_mm3, mean_wm_afd = afd_tract_metrics(
+        bundle_res, whole_density_class, sh_rows, chain.geo, lobes=lobes, vox_vol_mm3=vox_vol_mm3
+    )
+    eff_area_mm2 = float(tract_vol_mm3 / max(mean_length_mm, 1e-30))
+
     q_harmonic_t = harmonic_flux_coordinate(chain, flux26, abs_S_t, abs_E_t, visits_t=visits_t) if has_ends else np.full(chain.t_lin.size, 0.5)
     if q_committor_t is None:
         q_committor_t = q_harmonic_t
@@ -354,13 +525,22 @@ def quantify_bundle(chain, bundle_res, whole_density_class, sh_rows, affine, lob
         num = np.bincount(bin_idx, weights=w_flux * np.asarray(arr, np.float64), minlength=n_bins)
         return np.divide(num, bin_w, out=np.zeros(n_bins), where=bin_w > 0)
 
-    # Cross-sectional AFD area per harmonic bin: bin_afd_vol_mm3 / (mean_length_mm / n_bins)
+    # Cross-sectional AFD area per harmonic bin using actual physical path length spent in each bin
     bin_afd_vol = np.bincount(bin_idx, weights=voxel_afd_t, minlength=n_bins) * vox_vol_mm3 / max(mean_wm_afd, 1e-30)
-    bin_afd_area_mm2 = bin_afd_vol / max(mean_length_mm / n_bins, 1e-30)
+    bin_tdi_mm = np.bincount(bin_idx, weights=tdi_mm_t, minlength=n_bins)
+    bin_flux_ref = np.where(cut_flux > 1e-6 * n_streamlines, cut_flux, n_streamlines)
+    bin_len_mm = bin_tdi_mm / np.maximum(bin_flux_ref, 1e-30)
+    tot_bin_len = float(bin_len_mm.sum())
+    if tot_bin_len > 1e-12:
+        bin_len_mm = bin_len_mm * (mean_length_mm / tot_bin_len)
+    else:
+        bin_len_mm = np.full(n_bins, max(mean_length_mm / n_bins, 1e-30))
+    bin_afd_area_mm2 = np.divide(bin_afd_vol, bin_len_mm, out=np.zeros(n_bins), where=bin_len_mm > 1e-12)
 
     along_tract = dict(
         q_centers=cut_centers,
         cut_flux=cut_flux,
+        bin_length_mm=bin_len_mm,
         afd_area_mm2=bin_afd_area_mm2,
         voxel_afd=_profile(voxel_afd_t),
         coherence=_profile(coh_t),

@@ -19,7 +19,7 @@ from .core import bundle_core
 from .fields import BundleFields, endpoint_patches, flux_orientation, restrict_endpoints
 from .fixels import DirectedFixelChain, fixel_streamlines, segment_lobes, write_fixel_directory
 from .geometry import class_chord_lengths
-from .quantify import BundleQuantification, quantify_bundle
+from .quantify import BundleQuantification, afd_tract_metrics, quantify_bundle, sift2_optimize_launches
 from .solve import prepare_launches, segment_bundles, solve_bundle_cascade
 
 
@@ -31,7 +31,8 @@ def view(*args, **kwargs):
 
 
 __all__ = ["BundleFields", "BundleQuantification", "Chain", "ChainConfig", "ConnectomeResult",
-           "DirectedFixelChain", "build_connectome", "bundle_core", "class_chord_lengths",
-           "endpoint_patches", "fixel_streamlines", "flux_orientation", "prepare_launches",
-           "quantify_bundle", "restrict_endpoints", "run", "segment_bundles", "segment_lobes",
-           "solve_bundle_cascade", "view", "write_fixel_directory"]
+           "DirectedFixelChain", "afd_tract_metrics", "build_connectome", "bundle_core",
+           "class_chord_lengths", "endpoint_patches", "fixel_streamlines", "flux_orientation",
+           "prepare_launches", "quantify_bundle", "restrict_endpoints", "run", "segment_bundles",
+           "segment_lobes", "sift2_optimize_launches", "solve_bundle_cascade", "view",
+           "write_fixel_directory"]

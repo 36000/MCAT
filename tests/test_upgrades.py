@@ -288,4 +288,34 @@ def test_ptt_chain_config(crossing_phantom):
     assert res.flux26 is not None
 
 
+def test_sift2_optimize_launches_and_exact_tdi(crossing_phantom):
+    from mcat import sift2_optimize_launches
+
+    sh, zooms, transient, absorb, seeds = crossing_phantom
+    chain = Chain.build(sh, zooms, transient, absorb, ChainConfig())
+    launches = prepare_launches(chain, seeds)
+    ijk_t = np.stack(np.unravel_index(chain.t_lin, chain.pshape), 1) - 1
+    sh_rows = sh[tuple(ijk_t.T)]
+    lobes = segment_lobes(sh_rows, chain.geo)
+
+    # Optimize path-consistent SIFT2 launch weights to match fixel AFD(f)
+    sift2_launches, s_info = sift2_optimize_launches(
+        chain, launches, sh_rows, lobes=lobes, n_iter=6, reg_tikhonov=0.05, tol=1e-8
+    )
+    assert s_info["final_fit"]["rel_l2_err"] < s_info["initial_fit"]["rel_l2_err"]
+    assert s_info["final_fit"]["cosine"] >= s_info["initial_fit"]["cosine"]
+
+    # Segment horizontal bundle with path-consistent SIFT2 launches and verify exact flux conservation
+    end_right = np.zeros(transient.shape, bool)
+    end_right[-2, 4:8, 1:-1] = True
+    start_left = np.zeros(transient.shape, bool)
+    start_left[1, 4:8, 1:-1] = True
+    res_sift2 = segment_bundles(
+        chain, [dict(name="H", start=start_left, end=end_right)], sift2_launches, tol=1e-10, keep_fields=True
+    )["H"]
+    cons = res_sift2.fields.conservation()
+    assert cons["in"] < 1e-6 and cons["out"] < 1e-6
+
+
+
 

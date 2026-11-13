@@ -175,10 +175,10 @@ All of these are implemented in [`src/mcat/core.py`](../../src/mcat/core.py), [`
      $$\mathbf{T}_b(v) = \sum_{n=0}^{25} p_b(n \mid v)\, \hat{u}_n \hat{u}_n^\top, \qquad \text{coh}_b(v) = \frac{3\lambda_{\max}(\mathbf{T}_b(v)) - 1}{2} \in [0, 1].$$
    - In deep white-matter trunks (such as the mid-cingulate trunk or internal capsule), traffic is tightly collimated ($\text{coh}_b \approx 0.70\text{–}0.80$, $K_{\text{eff}} \approx 5.0\text{–}6.7$ neighbors); at cortical terminations and fans, traffic disperses across many neighbor directions ($\text{coh}_b \approx 0.50$, $K_{\text{eff}} \approx 8.6\text{–}9.9$).
 
-4. **Analytical SIFT and SIFT2 on Bundles (`_desc-afd_map.nii.gz`, `_desc-tdimm_map.nii.gz`):**
-   - Dividing bundle $b$'s expected traffic through fixel $f = (v, \ell)$, $n_b(f)$, by the unconditioned whole-brain Markov traffic $n_{\text{all}}(f)$ gives the bundle's exact fixel share $\text{share}_b(f) = n_b(f) / n_{\text{all}}(f) \in [0, 1]$, where any global scaling of seed density cancels out.
-   - Multiplying by the fixel's Apparent Fiber Density $\text{AFD}(f)$ (`lobes.integral[f]`) gives the bundle's intra-axonal density $\text{AFD}_b(v) = \sum_{f \in v} \text{share}_b(f)\,\text{AFD}(f)$ (`_desc-afd_map.nii.gz`) and **AFD-calibrated tract volume** $\mathcal{V}_{\text{AFD}}(b) = \sum_f \text{AFD}_b(f)\,V_{\text{vox}} / \overline{\text{AFD}}_{\text{WM}}$ ($\text{mm}^3$).
-   - Dividing $\mathcal{V}_{\text{AFD}}(b)$ by the exact Markov mean streamline length $\bar{L}_b = \big(\sum_v \text{TDI}_{\text{mm}}(v)\big) / N_{\text{streamlines}}(b)$ removes the $L$-bias of longer pathways to give the **effective axonal cross-sectional area** $\mathcal{A}_{\text{AFD}}(b) = \mathcal{V}_{\text{AFD}}(b) / \bar{L}_b$ ($\text{mm}^2$).
+4. **Local Fixel AFD Attribution (`afd_tract_metrics`) & Global Path-Consistent SIFT2 (`sift2_optimize_launches`) (`_desc-afd_map.nii.gz`, `_desc-tdimm_map.nii.gz`):**
+   - **Local Fixel AFD Attribution (`afd_tract_metrics`, 0-solve closed form):** Dividing bundle $b$'s expected traffic through fixel $f = (v, \ell)$, $n_b(f)$, by the unconditioned whole-brain Markov traffic $n_{\text{all}}(f)$ gives the bundle's local fixel share $\text{share}_b(f) = \operatorname{clip}(n_b(f) / n_{\text{all}}(f), 0, 1)$, where any uniform scaling of seed density cancels out. Multiplying by the fixel's Apparent Fiber Density $\text{AFD}(f)$ (`lobes.integral[f]`) gives the bundle-attributed fixel AFD map $\text{AFD}_b(v) = \sum_{f \in v} \text{share}_b(f)\,\text{AFD}(f)$ (`_desc-afd_map.nii.gz`) and **AFD-normalized tract volume** $\mathcal{V}_{\text{AFD}}(b) = \sum_f \text{AFD}_b(f)\,V_{\text{vox}} / \overline{\text{AFD}}_{\text{WM}}$ ($\text{mm}^3$).
+   - **Global Path-Consistent SIFT2 (`sift2_optimize_launches`, exact forward & adjoint optimizer):** Optimizes a single path-constant multiplier $w_p = w_{0,p} e^{f_p}$ per launched streamline $p$ across all $158{,}467$ streamlines simultaneously so whole-brain fixel visitation $\mu\,[\mathcal{A}\mathbf{w}]_f$ matches measured $\text{AFD}(f)$ across all $257{,}134$ fixels (`~9 s` / iteration on `MCAT-PTT`), strictly preserving reactive flux conservation ($L + \text{inflow} = n = \text{outflow} + A$) along every bundle.
+   - **Exact Transition-Weighted Physical Length (`tdi_mm_t`):** Multiplying each outgoing reactive edge flux $F_b(u, n)$ (`flux26`) by the exact Euclidean step distance $\|\mathbf{o}_n \odot \text{zooms}\|_2$ (excluding step-0 seed weight) gives $\text{TDI}_{\text{mm}}(u)$ and expected streamline length $\bar{L}_b$, removing the $L$-bias to yield the **AFD-derived effective cross-sectional area** $\mathcal{A}_{\text{AFD}}(b) = \mathcal{V}_{\text{AFD}}(b) / \bar{L}_b$ ($\text{mm}^2$). In `harmonic_tractometry`, each harmonic bin's AFD volume is divided by that bin's actual physical path length thickness $\Delta L_k = \text{TDI}_{\text{mm}}(\text{bin } k) / \mathcal{I}_{\text{cut}}(\text{bin } k)$.
 
 ---
 
@@ -365,4 +365,43 @@ Evaluated on `sub-22449_ses-01` (`130,116` white-matter voxels, `3,383,016` stat
    - Under `MCAT-PTT`, **90% of the bundle is packed into 22%–26% less white-matter volume** (`ARC_L`: `39.5 cm³` $\to$ `29.2 cm³`; `CST_L`: `33.7 cm³` $\to$ `25.2 cm³`; `CGC_R`: `19.8 cm³` $\to$ `15.5 cm³`), *and simultaneously* **62%–82% more walkers successfully reach the target ROI** (`ARC_L`: `259` $\to$ `470` streamlines; `CST_L`: `98` $\to$ `159`; `CGC_R`: `132` $\to$ `222`). Walkers stay focused inside the true anatomical sheet rather than leaking into a diffuse off-tract cloud.
 
 ![MCAT-PTT vs Baseline MCAT Comparison](fig6_ptt_comparison.png)
+
+---
+
+#### 8.5 Sensitivity to Step Size (`step`) and Turning Angle (`angle`) (`fig7_step_angle_sensitivity.png`)
+
+Evaluated across `angle` $\in \{25^\circ, 30^\circ, 35^\circ, 45^\circ\}$ and `step` $\in \{0.65, 0.80, 1.00\}$ on both the $42^\circ$ crossing-fiber phantom and `sub-22449_ses-01` (`ARC_L` and `CST_L`):
+
+| `(step, angle)` | Trie Nodes | Baseline Trapped States | `MCAT-PTT` Trapped States | Baseline `ARC_L` Count / Area / $V_{90}$ | `MCAT-PTT` `ARC_L` Count / Area / $V_{90}$ | `MCAT-PTT` Map Cosine vs. `(1.0, 35°)` |
+| :--- | ---: | ---: | ---: | :--- | :--- | ---: |
+| **`(1.00, 25°)`** | `2,564` | `26` | **`0`** | `300.6` / `26.9 mm²` / `34.1 cm³` | **`476.5` / `39.1 mm²` / `28.9 cm³`** | **`0.9990`** |
+| **`(1.00, 35°)`** | `36,992` | `8` | **`0`** | `258.6` / `22.5 mm²` / `39.5 cm³` | **`469.6` / `37.0 mm²` / `29.2 cm³`** | **`1.0000`** |
+| **`(1.00, 45°)`** | `525,182` | `3` | **`0`** | `203.2` / `19.6 mm²` / `43.2 cm³` | **`467.8` / `36.3 mm²` / `29.3 cm³`** | **`0.9998`** |
+| **`(0.80, 30°)`** | `91,124` | `16` | **`0`** | `258.1` / `23.1 mm²` / `38.9 cm³` | **`466.5` / `37.2 mm²` / `29.3 cm³`** | **`0.9996`** |
+| **`(0.65, 25°)`** | `75,308` | `8` | **`0`** | `269.0` / `24.6 mm²` / `37.2 cm³` | **`465.7` / `37.7 mm²` / `29.3 cm³`** | **`0.9988`** |
+
+![Step Size and Turning Angle Sensitivity: Baseline vs MCAT-PTT](fig7_step_angle_sensitivity.png)
+
+---
+
+### 9. Fixel $\text{AFD}(f)$ Validation: Unweighted Markov vs. Global Path-Consistent SIFT2 vs. Local Fixel AFD Attribution (`fig8_afd_vs_sift2_comparison.png`)
+
+Evaluated across all `257,134` white-matter fixels and `158,467` launched streamlines on `sub-22449_ses-01`, comparing:
+1. **Unweighted Markov Visitation ($\mu_0\,n_{\text{whole}}(f)$):** Raw seed-launched fixel visitation before SIFT2.
+2. **Global Path-Consistent SIFT2 ([`sift2_optimize_launches`](../../src/mcat/quantify.py)):** Optimizes 1 path-constant multiplier $w_p = w_{0,p} e^{f_p}$ per launched streamline $p$ via 8 matrix-free forward + adjoint solves so whole-brain fixel visitation $\mu\,[\mathcal{A}\mathbf{w}]_f$ matches measured $\text{AFD}(f)$ while strictly conserving reactive flux ($L + \text{inflow} = n = \text{outflow} + A$) along every bundle.
+3. **Local Fixel AFD Attribution ([`afd_tract_metrics`](../../src/mcat/quantify.py)):** Zero-solve closed-form local fixel share $\text{share}_b(f)\,\text{AFD}(f)$.
+
+| Chain / Bundle | Whole-Brain Fixel Fit Before SIFT2 ($\cos$ / $r$ / $R^2$) | Whole-Brain Fixel Fit After Global SIFT2 ($\cos$ / $r$ / $R^2$) | Local AFD Area ($\text{mm}^2$) | Path-Consistent SIFT2 Area ($\text{mm}^2$) | 3D Voxel Map $\cos(\text{Local}, \text{SIFT2})$ | Along-Tract Trunk CV (`SIFT2` vs. `Local`) |
+| :--- | :--- | :--- | ---: | ---: | ---: | :--- |
+| **Baseline (`whole`)** | `0.8851` / `0.7940` / `0.440` | **`0.9361` / `0.8733` / `0.680`** | — | — | — | — |
+| **Baseline `CST_L`** | — | — | `16.03 mm²` | `14.31 mm²` | **`0.9167`** | **`3.5%` vs. `20.1%`** |
+| **Baseline `ARC_L`** | — | — | `26.62 mm²` | `23.74 mm²` | **`0.9645`** | **`3.0%` vs. `15.6%`** |
+| **Baseline `CGC_R`** | — | — | `14.16 mm²` | `11.69 mm²` | **`0.9576`** | **`0.8%` vs. `6.1%`** |
+| **`MCAT-PTT` (`whole`)** | `0.8513` / `0.7503` / `0.288` | **`0.9158` / `0.8399` / `0.583`** | — | — | — | — |
+| **`MCAT-PTT` `CST_L`** | — | — | `26.58 mm²` | `21.67 mm²` | **`0.8790`** | **`1.9%` vs. `24.4%`** |
+| **`MCAT-PTT` `ARC_L`** | — | — | `44.11 mm²` | `35.81 mm²` | **`0.9447`** | **`0.8%` vs. `8.9%`** |
+| **`MCAT-PTT` `CGC_R`** | — | — | `23.44 mm²` | `18.06 mm²` | **`0.9413`** | **`0.6%` vs. `6.8%`** |
+
+![Fixel AFD(f) Validation: Unweighted Markov vs Global Path-Consistent SIFT2 vs Local Fixel AFD Attribution](fig8_afd_vs_sift2_comparison.png)
+
 

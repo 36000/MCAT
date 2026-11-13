@@ -273,10 +273,10 @@ def build_connectome(chain, sh_rows, atlas_vol, affine, launches=None, lobes: Lo
     # ------------------------------------------------------------------
     t_mat0 = time.perf_counter()
 
-    # Physical intra-axonal volume per fixel (mm^3)
-    voxel_total_afd = np.bincount(frow, weights=lobes.integral, minlength=Nt)
-    mean_wm_afd = max(float(voxel_total_afd.mean()), 1e-30)
-    afd_vol_f = (lobes.integral.astype(np.float64) / mean_wm_afd) * vox_vol_mm3  # (n_fixels,)
+    # Physical AFD-normalized volume per fixel (mm^3), normalized identically to quantify.afd_tract_metrics
+    voxel_total_afd = np.bincount(frow, weights=lobes.integral, minlength=Nt) if n_fix > 0 else np.ones(Nt)
+    mean_wm_afd = float(np.mean(voxel_total_afd[voxel_total_afd > 0])) if np.any(voxel_total_afd > 0) else 1.0
+    afd_vol_f = (lobes.integral.astype(np.float64) / max(mean_wm_afd, 1e-30)) * vox_vol_mm3  # (n_fixels,)
 
     # Unnormalized probabilistic AFD volume: 0.5 * sum_f V_AFD(f) (U+_fi U-_fj + U-_fi U+_fj)
     w_raw = 0.5 * afd_vol_f[:, None]
