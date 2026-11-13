@@ -62,6 +62,15 @@ def _resample(xyz, n):
     return np.stack([np.interp(t, s, xyz[:, k]) for k in range(3)], 1)
 
 
+def _support(dn, floor):
+    """Voxels with density above floor x peak, in the connected component holding the peak
+    (moved unchanged out of bundle_core, which mpat.profiles shares it with)."""
+    from scipy.ndimage import label
+
+    lab, _ = label(dn > floor, np.ones((3, 3, 3)))
+    return lab == lab[np.unravel_index(np.argmax(dn), dn.shape)]
+
+
 def _graph(cost_vox, keep, vox_mm):
     import scipy.sparse as sps
 
@@ -173,7 +182,7 @@ def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, f
     body                anchors are placed on voxels with density >= body x peak
     anchor              "centroid" (default) or "mode": where in each end's endpoints to anchor
     """
-    from scipy.ndimage import gaussian_filter1d, label, map_coordinates
+    from scipy.ndimage import gaussian_filter1d, map_coordinates
     from scipy.sparse.csgraph import dijkstra
 
     d = np.clip(np.nan_to_num(np.asarray(density, float)), 0, None)
@@ -183,10 +192,7 @@ def bundle_core(density, affine, endpoints, start=None, end=None, n_nodes=100, f
     dn = d / d.max()
     vox_mm = float(np.abs(np.linalg.det(affine[:3, :3])) ** (1 / 3))
     S_roi, E_roi, how = split_ends(ep, affine, start, end, include)
-    keep = dn > floor
-    lab, _ = label(keep, np.ones((3, 3, 3)))
-    core_lab = lab[np.unravel_index(np.argmax(dn), dn.shape)]
-    keep = lab == core_lab                          # the component holding the peak
+    keep = _support(dn, floor)
     bod = keep & (dn >= body)
     s_vox, e_vox = _anchor(ep, S_roi, bod, anchor), _anchor(ep, E_roi, bod, anchor)
 
